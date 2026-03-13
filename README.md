@@ -179,28 +179,32 @@ addr := lemonfig.Combine(host, port, func(h string, p int) (string, error) {
 
 ## Architecture
 
-```
-                    ┌─────────────┐
-                    │ ConfigSource │  (FileSource, PollingSource, or custom)
-                    └──────┬──────┘
-                           │ Fetch()
-                    ┌──────▼──────┐
-                    │   Manager   │  owns lifecycle: Start / Stop / Reload
-                    └──────┬──────┘
-                           │ builds generation (Viper parse → DAG walk)
-               ┌───────────┼───────────┐
-               ▼           ▼           ▼
-          ┌────────┐  ┌────────┐  ┌────────┐
-          │ Load[T]│  │ Key[T] │  │Struct[T]│  root nodes
-          └───┬────┘  └───┬────┘  └───┬────┘
-              │           │           │
-              ▼           ▼           ▼
-          ┌────────┐  ┌──────────┐  ┌──────────┐
-          │ Map    │  │ Combine  │  │ Combine3 │  transform nodes
-          └───┬────┘  └────┬─────┘  └────┬─────┘
-              │            │             │
-              ▼            ▼             ▼
-         Derived[T].Get()  ─── atomic pointer load ─── lock-free
+```mermaid
+graph TD
+    Source["ConfigSource<br/><small>FileSource · PollingSource · custom</small>"]
+    Source -- "Fetch()" --> Manager
+    Manager["Manager<br/><small>Start · Stop · Reload</small>"]
+    Manager -- "builds generation<br/><small>Viper parse → DAG walk</small>" --> Load["Load[T]"]
+    Manager -- " " --> Key["Key[T]"]
+    Manager -- " " --> Struct["Struct[T]"]
+
+    Load --> Map["Map"]
+    Key --> Combine["Combine"]
+    Struct --> Combine3["Combine3"]
+
+    Map --> Get["Derived[T].Get()<br/><small>atomic pointer load · lock-free</small>"]
+    Combine --> Get
+    Combine3 --> Get
+
+    style Source fill:#fef3c7,stroke:#f59e0b,color:#000
+    style Manager fill:#dbeafe,stroke:#3b82f6,color:#000
+    style Load fill:#f3e8ff,stroke:#8b5cf6,color:#000
+    style Key fill:#f3e8ff,stroke:#8b5cf6,color:#000
+    style Struct fill:#f3e8ff,stroke:#8b5cf6,color:#000
+    style Map fill:#dcfce7,stroke:#22c55e,color:#000
+    style Combine fill:#dcfce7,stroke:#22c55e,color:#000
+    style Combine3 fill:#dcfce7,stroke:#22c55e,color:#000
+    style Get fill:#fef9c3,stroke:#eab308,color:#000
 ```
 
 **Atomic generation swap:** Every reload computes a new immutable snapshot. All values update together via `atomic.Pointer` — no partial states, no locks on reads.
