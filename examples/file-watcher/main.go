@@ -81,8 +81,7 @@ server:
 	for {
 		select {
 		case <-deadline:
-			fmt.Println("timed out waiting for config change")
-			return
+			log.Fatal("timed out waiting for config change")
 		case <-ticker.C:
 			c := cfg.Get()
 			if c.Server.Port == 9090 {
