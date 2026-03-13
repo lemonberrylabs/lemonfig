@@ -1,12 +1,46 @@
-# lemonfig
+<p align="center">
+  <img src="https://raw.githubusercontent.com/lemonberrylabs/lemonfig/main/assets/banner.png" alt="lemonfig banner" width="100%" />
+</p>
 
-Reactive, hot-reloadable configuration for Go. Instead of reading config values as plain structs, you get `Derived[T]` handles that always return the latest value. When config reloads, all derived values are atomically recomputed and swapped in — including heavy resources like DB pools, HTTP clients, and gRPC connections.
+<h1 align="center">lemonfig</h1>
+
+<p align="center">
+  <strong>Reactive, hot-reloadable configuration for Go.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/lemonberrylabs/lemonfig/actions/workflows/ci.yaml"><img src="https://github.com/lemonberrylabs/lemonfig/actions/workflows/ci.yaml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://pkg.go.dev/github.com/lemonberrylabs/lemonfig"><img src="https://pkg.go.dev/badge/github.com/lemonberrylabs/lemonfig.svg" alt="Go Reference"></a>
+  <a href="https://goreportcard.com/report/github.com/lemonberrylabs/lemonfig"><img src="https://goreportcard.com/badge/github.com/lemonberrylabs/lemonfig" alt="Go Report Card"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/lemonberrylabs/lemonfig" alt="License"></a>
+  <a href="https://github.com/lemonberrylabs/lemonfig/releases"><img src="https://img.shields.io/github/v/release/lemonberrylabs/lemonfig?include_prereleases&sort=semver" alt="Release"></a>
+</p>
+
+<p align="center">
+  Instead of reading config values as plain structs, you get <code>Derived[T]</code> handles that <em>always</em> return the latest value.<br/>
+  When config reloads, all derived values are atomically recomputed and swapped in &mdash;<br/>
+  including heavy resources like DB pools, HTTP clients, and gRPC connections.
+</p>
+
+---
+
+## Why lemonfig?
+
+| Problem | lemonfig solution |
+|---|---|
+| Config is read once at startup | `Derived[T].Get()` always returns the latest value |
+| Reload requires restart | Hot-reload via file watching or polling &mdash; zero downtime |
+| Stale DB pools after config change | `MapWithCleanup` rebuilds resources and tears down old ones |
+| Inconsistent reads during reload | Atomic generation swap &mdash; all values update together |
+| Lock contention on hot path | `Get()` is a single atomic pointer load, fully lock-free |
 
 ## Install
 
 ```bash
 go get github.com/lemonberrylabs/lemonfig
 ```
+
+Requires **Go 1.25+**.
 
 ## Quick Start
 
@@ -39,12 +73,10 @@ func main() {
         log.Fatal(err)
     }
 
-    // Load the full config struct.
     cfg := lemonfig.Load[Config](mgr)
 
-    // Derive sub-fields or resources before Start.
-    port := lemonfig.Map(cfg, func(c Config) (int, error) {
-        return c.Server.Port, nil
+    addr := lemonfig.Map(cfg, func(c Config) (string, error) {
+        return fmt.Sprintf("%s:%d", c.Server.Host, c.Server.Port), nil
     })
 
     if err := mgr.Start(context.Background()); err != nil {
@@ -52,28 +84,42 @@ func main() {
     }
     defer mgr.Stop()
 
-    fmt.Println(cfg.Get().Name)   // always returns the latest value
-    fmt.Println(port.Get())       // reactive sub-field
+    fmt.Println(cfg.Get().Name) // always the latest value
+    fmt.Println(addr.Get())     // reactive derived value
 }
 ```
 
-## Deriving Sub-Fields
+## Core Concepts
 
-Use `Map` to extract config sub-fields or transform them into derived resources.
+### Load & Derive
 
-> **Note:** `Map`, `Combine`, and other combinators are package-level functions (not methods)
-> because Go does not support methods with additional type parameters.
+`Load[T]` loads your full config struct. `Map` derives sub-fields or transforms.
 
 ```go
 mgr, _ := lemonfig.NewManager(src)
 cfg := lemonfig.Load[Config](mgr)
 
 // Extract a sub-field.
-env := lemonfig.Map(cfg, func(c Config) (Environment, error) {
+env := lemonfig.Map(cfg, func(c Config) (string, error) {
     return c.Environment, nil
 })
 
-// Derive a heavy resource with cleanup.
+// Combine multiple values.
+addr := lemonfig.Combine(host, port, func(h string, p int) (string, error) {
+    return fmt.Sprintf("%s:%d", h, p), nil
+})
+
+mgr.Start(ctx)
+```
+
+> **Note:** `Map`, `Combine`, and other combinators are package-level functions (not methods)
+> because Go does not support methods with additional type parameters.
+
+### Managed Resources with Cleanup
+
+Rebuild heavy resources on config change. Old resources are cleaned up after a grace period.
+
+```go
 pool := lemonfig.MapWithCleanup(cfg,
     func(c Config) (*pgxpool.Pool, error) {
         return pgxpool.New(context.Background(), c.Database.URL)
@@ -84,26 +130,26 @@ pool := lemonfig.MapWithCleanup(cfg,
 )
 
 mgr.Start(ctx)
-defer mgr.Stop()
+defer mgr.Stop() // triggers final cleanup
 
-pool.Get().QueryRow(ctx, "SELECT ...")
+pool.Get().QueryRow(ctx, "SELECT ...") // always uses the current pool
 ```
 
-## Custom ConfigSource
-
-Implement `ConfigSource` to load config from any backend:
+Cleanup runs in reverse topological order after a configurable grace period (default 30s):
 
 ```go
-type HTTPSource struct {
-    URL string
-}
+lemonfig.WithCleanupGrace(10 * time.Second)
+```
+
+### Custom Sources
+
+Implement `ConfigSource` to load config from anywhere:
+
+```go
+type HTTPSource struct{ URL string }
 
 func (s *HTTPSource) Fetch(ctx context.Context) ([]byte, string, error) {
-    req, err := http.NewRequestWithContext(ctx, "GET", s.URL, nil)
-    if err != nil {
-        return nil, "", err
-    }
-    resp, err := http.DefaultClient.Do(req)
+    resp, err := http.Get(s.URL)
     if err != nil {
         return nil, "", err
     }
@@ -113,78 +159,126 @@ func (s *HTTPSource) Fetch(ctx context.Context) ([]byte, string, error) {
 }
 ```
 
-Wrap it with polling for automatic reloads:
+Wrap with polling for automatic reloads:
 
 ```go
 src := source.NewPollingSource(&HTTPSource{URL: "https://config.internal/app"}, 30*time.Second)
-mgr, _ := lemonfig.NewManager(src)
-cfg := lemonfig.Load[Config](mgr)
 ```
 
-## Atomicity Guarantees
+### Advanced: Key-Based Access
 
-All `Derived[T]` values within a generation are computed from the same config snapshot. A generation is swapped atomically via `atomic.Pointer` — there is no moment where some values reflect old config and others reflect new config.
-
-`Derived[T].Get()` performs a single atomic pointer load, making it lock-free and safe for concurrent use from any goroutine.
-
-**Note:** Two separate `.Get()` calls may observe different generations if a reload happens between them. For values that must be consistent with each other, use `Combine` to express the dependency explicitly.
-
-## Cleanup and Resource Lifecycle
-
-When a reload replaces a derived value that has a cleanup function (registered via `MapWithCleanup`), the old value's cleanup runs after a configurable grace period (default: 30 seconds). This lets in-flight requests finish before resources are torn down.
-
-Cleanup runs in reverse topological order (leaves before roots) in a background goroutine. Panics in cleanup functions are caught and logged.
+For fine-grained control without a root struct:
 
 ```go
-lemonfig.WithCleanupGrace(10 * time.Second)
-```
-
-## Error Handling During Reload
-
-Reload follows an all-or-nothing principle:
-
-- **Fetch failure:** old generation preserved, error logged.
-- **Parse failure:** old generation preserved, error logged.
-- **Validation failure:** old generation preserved (use `WithValidation`).
-- **Transform failure:** entire reload aborted, old generation preserved. No partial updates.
-
-`Manager.Reload()` returns the error, so callers can handle it. When using `WatchableSource`, errors are logged via the configured `Logger`.
-
-## Registration Must Happen Before Start
-
-All `Load`, `Map`, `MapWithCleanup`, `Combine`, and `Combine3` calls must happen before `mgr.Start()`. After Start, the DAG is frozen and any attempt to register new derived values will panic. This keeps the implementation simple and avoids race conditions with concurrent reloads.
-
-## Advanced API
-
-For fine-grained control, use `NewManager` directly with `Key` and `Struct`:
-
-```go
-mgr, _ := lemonfig.NewManager(src)
 host := lemonfig.Key[string](mgr, "redis.host")
 port := lemonfig.Key[int](mgr, "redis.port")
 addr := lemonfig.Combine(host, port, func(h string, p int) (string, error) {
     return fmt.Sprintf("%s:%d", h, p), nil
 })
-mgr.Start(ctx)
 ```
+
+## Architecture
+
+```
+                    ┌─────────────┐
+                    │ ConfigSource │  (FileSource, PollingSource, or custom)
+                    └──────┬──────┘
+                           │ Fetch()
+                    ┌──────▼──────┐
+                    │   Manager   │  owns lifecycle: Start / Stop / Reload
+                    └──────┬──────┘
+                           │ builds generation (Viper parse → DAG walk)
+               ┌───────────┼───────────┐
+               ▼           ▼           ▼
+          ┌────────┐  ┌────────┐  ┌────────┐
+          │ Load[T]│  │ Key[T] │  │Struct[T]│  root nodes
+          └───┬────┘  └───┬────┘  └───┬────┘
+              │           │           │
+              ▼           ▼           ▼
+          ┌────────┐  ┌──────────┐  ┌──────────┐
+          │ Map    │  │ Combine  │  │ Combine3 │  transform nodes
+          └───┬────┘  └────┬─────┘  └────┬─────┘
+              │            │             │
+              ▼            ▼             ▼
+         Derived[T].Get()  ─── atomic pointer load ─── lock-free
+```
+
+**Atomic generation swap:** Every reload computes a new immutable snapshot. All values update together via `atomic.Pointer` — no partial states, no locks on reads.
+
+**All-or-nothing reload:** If any step fails (fetch, parse, validate, transform), the old generation is preserved. No partial updates ever reach consumers.
+
+**DAG frozen at Start:** All `Load`/`Map`/`Combine` registrations must happen before `mgr.Start()`. This keeps the implementation simple and race-free.
 
 ## Logging
 
-Pass a logger via `WithLogger`. The library defines a minimal interface — wrap your preferred logger:
+Pass a logger via `WithLogger`. The library defines a minimal interface:
 
 ```go
 type Logger interface {
     Info(msg string, keysAndValues ...any)
     Error(msg string, keysAndValues ...any)
 }
+```
 
-// Example: wrap slog
+Adapters for popular loggers:
+
+<details>
+<summary><strong>slog</strong> (stdlib)</summary>
+
+```go
 type SlogAdapter struct{ *slog.Logger }
 
 func (a SlogAdapter) Info(msg string, kv ...any)  { a.Logger.Info(msg, kv...) }
 func (a SlogAdapter) Error(msg string, kv ...any) { a.Logger.Error(msg, kv...) }
+
+mgr, _ := lemonfig.NewManager(src, lemonfig.WithLogger(SlogAdapter{slog.Default()}))
 ```
+
+</details>
+
+<details>
+<summary><strong>zap</strong></summary>
+
+```go
+type ZapAdapter struct{ *zap.SugaredLogger }
+
+func (a ZapAdapter) Info(msg string, kv ...any)  { a.SugaredLogger.Infow(msg, kv...) }
+func (a ZapAdapter) Error(msg string, kv ...any) { a.SugaredLogger.Errorw(msg, kv...) }
+
+mgr, _ := lemonfig.NewManager(src, lemonfig.WithLogger(ZapAdapter{zapLogger.Sugar()}))
+```
+
+</details>
+
+## Error Handling
+
+| Failure | Behavior |
+|---|---|
+| Fetch error | Old generation preserved, error logged |
+| Parse error | Old generation preserved, error logged |
+| Validation error | Old generation preserved (use `WithValidation`) |
+| Transform error | Entire reload aborted, old generation preserved |
+
+`Manager.Reload()` returns the error for programmatic handling.
+
+## Examples
+
+Working examples live in [`examples/`](examples/) and run as integration tests in CI:
+
+| Example | Description |
+|---|---|
+| [`file-watcher`](examples/file-watcher/) | FileSource watching a YAML file with live hot-reload |
+| [`logger-slog`](examples/logger-slog/) | slog adapter integration |
+| [`logger-zap`](examples/logger-zap/) | zap adapter integration |
+
+## Contributing
+
+Contributions are welcome! Please read the [Contributing Guide](CONTRIBUTING.md) before opening a pull request.
+
+## What's in a name?
+
+**lemonfig** is a portmanteau of *lemon* and *config*, following the citrus theme of [Lemonberry Labs](https://lemonberrylabs.com).
 
 ## License
 
-MIT
+[MIT](LICENSE) &mdash; built with care by [Lemonberry Labs](https://lemonberrylabs.com).
