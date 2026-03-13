@@ -36,7 +36,7 @@ type Manager struct {
 
 // NewManager creates a [Manager] with the given source and options.
 // It performs the initial config fetch and builds the first generation.
-// Derived values ([Key], [Struct], [Map], [Combine]) should be registered
+// Values ([Key], [Struct], [Map], [Combine]) should be registered
 // after NewManager returns but before [Manager.Start] is called.
 func NewManager(source ConfigSource, opts ...Option) (*Manager, error) {
 	cfg := defaultConfig()

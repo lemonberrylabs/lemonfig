@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  Instead of reading config values as plain structs, you get <code>Derived[T]</code> handles that <em>always</em> return the latest value.<br/>
+  Instead of reading config values as plain structs, you get <code>Val[T]</code> handles that <em>always</em> return the latest value.<br/>
   When config reloads, all derived values are atomically recomputed and swapped in &mdash;<br/>
   including heavy resources like DB pools, HTTP clients, and gRPC connections.
 </p>
@@ -28,7 +28,7 @@
 
 | Problem | lemonfig solution |
 |---|---|
-| Config is read once at startup | `Derived[T].Get()` always returns the latest value |
+| Config is read once at startup | `Val[T].Get()` always returns the latest value |
 | Reload requires restart | Hot-reload via file watching or polling &mdash; zero downtime |
 | Stale DB pools after config change | `MapWithCleanup` rebuilds resources and tears down old ones |
 | Inconsistent reads during reload | Atomic generation swap &mdash; all values update together |
@@ -192,7 +192,7 @@ graph TD
     Key --> Combine["Combine"]
     Struct --> Combine3["Combine3"]
 
-    Map --> Get["Derived[T].Get()<br/><small>atomic pointer load · lock-free</small>"]
+    Map --> Get["Val[T].Get()<br/><small>atomic pointer load · lock-free</small>"]
     Combine --> Get
     Combine3 --> Get
 

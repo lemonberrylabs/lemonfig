@@ -1,6 +1,6 @@
 // Package lemonfig provides reactive, hot-reloadable configuration for Go applications.
 //
-// It uses Viper under the hood and provides [Derived] handles that always return
+// It uses Viper under the hood and provides [Val] handles that always return
 // the latest config value. When config reloads, all derived values are atomically
 // recomputed and swapped in — including heavy resources like DB pools and HTTP clients.
 package lemonfig

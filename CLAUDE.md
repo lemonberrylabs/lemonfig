@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `lemonfig` — a reactive, hot-reloadable configuration library for Go. OSS, module path `github.com/lemonberrylabs/lemonfig`. Targets Go 1.25+.
 
-Uses Viper under the hood. Provides `Derived[T]` handles that always return the latest config value via atomic generation swaps.
+Uses Viper under the hood. Provides `Val[T]` handles that always return the latest config value via atomic generation swaps.
 
 ## Commands
 
@@ -35,7 +35,7 @@ mgr.Start(ctx)
 **Advanced API:** `Key`/`Struct` for path-based access without a root struct.
 
 - **Manager** (`manager.go`) — central orchestrator. Owns the `ConfigSource`, lifecycle (`Start`/`Stop`/`Reload`), and the DAG. Holds atomic pointer to current `generation`, serializes reloads via mutex.
-- **Derived[T]** (`derived.go`) — read-only reactive value handle. `Get()` does one atomic pointer load + map lookup. `Load`, `Map`, `Combine`, etc. are package-level functions (Go does not support methods with additional type parameters).
+- **Val[T]** (`derived.go`) — read-only reactive value handle. `Get()` does one atomic pointer load + map lookup. `Load`, `Map`, `Combine`, etc. are package-level functions (Go does not support methods with additional type parameters).
 - **Generation** (`generation.go`) — immutable snapshot: version + frozen Viper + `map[derivedID]any`. Atomically swapped via `atomic.Pointer`.
 - **DAG nodes** (`derived.go`) — type-erased `derivedNode` interface. Root nodes (`keyNode`, `structNode`) extract from Viper; transform nodes (`mapNode`, `combineNode`, `combine3Node`) recompute only when parents are dirty.
 - **Sources** (`source/`) — `ConfigSource` and `WatchableSource` interfaces in `source.go`. `FileSource` (fsnotify + debounce) and `PollingSource` (ticker + byte comparison) in `source/`.
@@ -49,7 +49,7 @@ Key invariant: all `Load`/`Map`/`Combine` registrations must happen before `mgr.
 - **Generics over `any`.** Use concrete types or type parameters. Avoid `any` / `interface{}` unless truly required by the API contract (e.g., the internal `generation.values` map). Every use of `any` must be justified.
 - **Go 1.25 features.** Use the latest language and stdlib additions. When unsure about Go 1.25 capabilities, **check context7 for the latest Go documentation** before assuming a feature doesn't exist.
 - **DRY & KISS.** No premature abstractions. No unnecessary indirection. Duplicate code only when the alternative is worse coupling.
-- **Performance matters.** `Derived[T].Get()` must remain lock-free (single atomic load + map lookup). Prefer zero-allocation paths. Benchmark hot paths. Avoid unnecessary heap escapes — use `go build -gcflags='-m'` to check.
+- **Performance matters.** `Val[T].Get()` must remain lock-free (single atomic load + map lookup). Prefer zero-allocation paths. Benchmark hot paths. Avoid unnecessary heap escapes — use `go build -gcflags='-m'` to check.
 - **Error handling.** Return `error`; don't panic (except `ErrFrozen` on post-Start registration). Use `fmt.Errorf` with `%w` for wrapping. Sentinel errors are in `errors.go`.
 - **Naming.** Short, unexported helpers. Exported names get a brief GoDoc comment. Package names are lowercase, single-word when possible.
 - **No `init()` functions.** Explicit initialization only.

@@ -42,7 +42,7 @@ Requires **Go 1.25+**.
 
 ## Performance
 
-`Derived[T].Get()` must remain lock-free (single atomic pointer load + map lookup). Any change that adds allocations, locks, or contention to the read path needs benchmarks proving it doesn't regress.
+`Val[T].Get()` must remain lock-free (single atomic pointer load + map lookup). Any change that adds allocations, locks, or contention to the read path needs benchmarks proving it doesn't regress.
 
 ## Examples
 
