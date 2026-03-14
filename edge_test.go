@@ -1179,6 +1179,66 @@ func TestReload_IdenticalConfig_NoRecomputation(t *testing.T) {
 	}
 }
 
+func TestReload_UnrelatedChange_PointerStability(t *testing.T) {
+	// Config has two independent subtrees: "buffer" and "other".
+	// A Val[*Wrapper] is derived from "buffer.size" via Map.
+	// When only "other" changes, the Wrapper pointer must remain identical —
+	// not just DeepEqual, but the exact same pointer.
+	mgr, src := startWithSource(t, "buffer:\n  size: 1024\nother:\n  thing: aaa")
+
+	type Wrapper struct {
+		Buf  []byte
+		Size int
+	}
+
+	type OtherConfig struct {
+		Thing string `mapstructure:"thing"`
+	}
+
+	type BufferConfig struct {
+		Size int `mapstructure:"size"`
+	}
+
+	bufCfg := lemonfig.Struct[BufferConfig](mgr, "buffer")
+	wrapper := lemonfig.Map(bufCfg, func(c BufferConfig) (*Wrapper, error) {
+		return &Wrapper{Buf: make([]byte, c.Size), Size: c.Size}, nil
+	})
+
+	otherCfg := lemonfig.Struct[OtherConfig](mgr, "other")
+	otherVal := lemonfig.Map(otherCfg, func(c OtherConfig) (string, error) {
+		return c.Thing, nil
+	})
+
+	mustStart(t, mgr)
+
+	ptrBefore := wrapper.Get()
+	otherBefore := otherVal.Get()
+
+	if ptrBefore.Size != 1024 || len(ptrBefore.Buf) != 1024 {
+		t.Fatalf("initial wrapper: size=%d, buf len=%d", ptrBefore.Size, len(ptrBefore.Buf))
+	}
+	if otherBefore != "aaa" {
+		t.Fatalf("initial other = %q", otherBefore)
+	}
+
+	// Change only "other", leave "buffer" untouched.
+	src.Set("buffer:\n  size: 1024\nother:\n  thing: bbb")
+	if err := mgr.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ptrAfter := wrapper.Get()
+	otherAfter := otherVal.Get()
+
+	if otherAfter != "bbb" {
+		t.Errorf("other should have changed to bbb, got %q", otherAfter)
+	}
+
+	if ptrBefore != ptrAfter {
+		t.Error("wrapper pointer changed even though buffer config was untouched")
+	}
+}
+
 // --- Key change tracking edge cases ---
 
 func TestKey_ValueChangesBackToOriginal(t *testing.T) {
