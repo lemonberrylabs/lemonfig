@@ -32,6 +32,8 @@ type Manager struct {
 	started bool
 	cancel  context.CancelFunc
 	done    chan struct{}
+
+	eagerRecompute bool // set by TestVal; recompute derived nodes on every addNode
 }
 
 // NewManager creates a [Manager] with the given source and options.
@@ -67,6 +69,9 @@ func (m *Manager) addNode(node derivedNode, isRoot bool) {
 		m.roots = append(m.roots, node)
 	}
 	m.allNodes = append(m.allNodes, node)
+	if m.eagerRecompute {
+		m.recomputeTestNodes()
+	}
 }
 
 // Start freezes the DAG, performs the initial load, and begins watching
