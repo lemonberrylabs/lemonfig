@@ -68,6 +68,13 @@ func (s *FileSource) Watch(ctx context.Context, onChange func()) error {
 	base := filepath.Base(s.path)
 	var timer *time.Timer
 
+	// Fire one debounced onChange now that the watcher is established. The
+	// caller typically fetches the file before Watch's fsnotify setup
+	// completes; a write landing in that gap would otherwise be missed
+	// forever. The extra re-fetch is idempotent — unchanged content produces
+	// no observable change downstream.
+	timer = time.AfterFunc(s.debounce, onChange)
+
 	for {
 		select {
 		case <-ctx.Done():

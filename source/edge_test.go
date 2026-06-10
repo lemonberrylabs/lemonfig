@@ -158,14 +158,16 @@ func TestFileSource_Watch_IgnoresOtherFiles(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var called atomic.Bool
+	var count atomic.Int32
 	done := make(chan struct{})
 	go func() {
-		src.Watch(ctx, func() { called.Store(true) })
+		src.Watch(ctx, func() { count.Add(1) })
 		close(done)
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	// Let the watcher start and the initial established-sync callback fire.
+	time.Sleep(150 * time.Millisecond)
+	baseline := count.Load()
 
 	// Write to a different file in the same directory.
 	if err := os.WriteFile(otherPath, []byte("other: data"), 0644); err != nil {
@@ -174,8 +176,8 @@ func TestFileSource_Watch_IgnoresOtherFiles(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	if called.Load() {
-		t.Error("onChange was called for a different file")
+	if got := count.Load(); got != baseline {
+		t.Errorf("onChange was called for a different file (count %d -> %d)", baseline, got)
 	}
 
 	cancel()

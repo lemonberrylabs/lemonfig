@@ -14,5 +14,12 @@ type WatchableSource interface {
 	// Watch blocks and calls onChange whenever the config changes.
 	// It must respect context cancellation and return nil when the
 	// context is done.
+	//
+	// Implementations whose change detection has a setup window (e.g.
+	// filesystem watchers) should invoke onChange once as soon as watching
+	// is established, so a change landing between the caller's initial
+	// fetch and watch setup is not missed. Spurious invocations are safe:
+	// the caller re-fetches, and unchanged content produces no downstream
+	// change.
 	Watch(ctx context.Context, onChange func()) error
 }
