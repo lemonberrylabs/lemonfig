@@ -10,11 +10,12 @@ import (
 type Option func(*managerConfig)
 
 type managerConfig struct {
-	configType   string
-	validate     func(*viper.Viper) error
-	cleanupGrace time.Duration
-	logger       Logger
-	onReload     []func(old, new_ *viper.Viper)
+	configType     string
+	validate       func(*viper.Viper) error
+	cleanupGrace   time.Duration
+	logger         Logger
+	onReload       []func(old, new_ *viper.Viper)
+	viperConfigure []func(*viper.Viper)
 }
 
 func defaultConfig() managerConfig {
@@ -28,6 +29,14 @@ func defaultConfig() managerConfig {
 // If not set, the format returned by [ConfigSource.Fetch] is used.
 func WithConfigType(t string) Option {
 	return func(c *managerConfig) { c.configType = t }
+}
+
+// WithViperConfigure registers a function applied to each fresh Viper
+// instance before the raw config bytes are read into it. Use it to set
+// defaults, enable environment-variable overrides, or otherwise tune
+// per-generation Viper behavior. Multiple functions run in registration order.
+func WithViperConfigure(fn func(*viper.Viper)) Option {
+	return func(c *managerConfig) { c.viperConfigure = append(c.viperConfigure, fn) }
 }
 
 // WithValidation registers a function that validates a parsed config.

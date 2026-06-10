@@ -161,6 +161,9 @@ func (m *Manager) reloadLocked(ctx context.Context) error {
 
 	v := viper.New()
 	v.SetConfigType(cfgType)
+	for _, fn := range m.cfg.viperConfigure {
+		fn(v)
+	}
 	if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
 		m.cfg.logger.Error("parse failed", "error", err)
 		return fmt.Errorf("%w: %w", ErrParseFailed, err)
