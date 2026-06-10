@@ -310,3 +310,22 @@ func TestStruct_MissingPath(t *testing.T) {
 		t.Errorf("expected zero value, got %+v", got)
 	}
 }
+
+func TestGetBeforeStartReturnsZero(t *testing.T) {
+	mgr, err := lemonfig.NewManager(newStaticSource("v: 1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := lemonfig.Key[int](mgr, "v")
+	// No Start yet — Get must return the zero value, not panic.
+	if got := v.Get(); got != 0 {
+		t.Errorf("Get before Start = %d, want zero", got)
+	}
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mgr.Stop() }()
+	if got := v.Get(); got != 1 {
+		t.Errorf("Get after Start = %d, want 1", got)
+	}
+}

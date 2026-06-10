@@ -40,8 +40,16 @@ type Val[T any] struct {
 // Get returns the current value of this derived node.
 // It performs a single atomic pointer load followed by a map lookup — lock-free
 // and safe to call from any goroutine.
+//
+// Before [Manager.Start] has built the first generation, Get returns the zero
+// value of T. Callers that may run before Start should treat the zero value
+// as "not yet loaded".
 func (d *Val[T]) Get() T {
 	gen := d.mgr.current.Load()
+	if gen == nil {
+		var zero T
+		return zero
+	}
 	v, ok := gen.values[d.id]
 	if !ok {
 		var zero T
