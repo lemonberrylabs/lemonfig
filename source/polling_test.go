@@ -78,8 +78,9 @@ func TestPollingSource_NoChangeNoCallback(t *testing.T) {
 	// Let several polls happen without changing data.
 	time.Sleep(200 * time.Millisecond)
 
-	if count.Load() != 0 {
-		t.Errorf("onChange called %d times, expected 0", count.Load())
+	// Exactly the one apply Watch performs at setup; no change-driven calls.
+	if count.Load() != 1 {
+		t.Errorf("onChange called %d times, expected 1 (setup only)", count.Load())
 	}
 
 	cancel()

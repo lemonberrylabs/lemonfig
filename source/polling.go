@@ -39,10 +39,15 @@ func (s *PollingSource) Watch(ctx context.Context, onChange func() error) error 
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
-	// Capture initial state.
-	data, _, err := s.inner.Fetch(ctx)
-	if err == nil {
-		s.lastData = data
+	// Establish the baseline by applying once, per the WatchableSource
+	// contract: the caller's own initial fetch happened before this Watch
+	// started, so content that landed in between would otherwise be treated
+	// as already seen and missed until the next change. If the apply fails,
+	// lastData stays nil and the first tick retries.
+	if data, _, err := s.inner.Fetch(ctx); err == nil {
+		if onChange() == nil {
+			s.lastData = data
+		}
 	}
 
 	for {

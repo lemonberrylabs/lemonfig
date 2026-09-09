@@ -265,6 +265,7 @@ func TestPollingSource_InnerFetchError_SkipsTick(t *testing.T) {
 	}()
 
 	time.Sleep(30 * time.Millisecond)
+	called.Store(false) // discard the one apply Watch performs at setup
 
 	// Enable failures.
 	inner.fail.Store(true)
@@ -314,10 +315,11 @@ func TestPollingSource_MultipleChangesBetweenPolls(t *testing.T) {
 	// Wait for at least one poll.
 	time.Sleep(300 * time.Millisecond)
 
-	// Should detect exactly one change (the latest state differs from last known).
+	// Should detect exactly one change (the latest state differs from last
+	// known) on top of the one apply Watch performs at setup.
 	got := count.Load()
-	if got != 1 {
-		t.Errorf("onChange called %d times, expected 1", got)
+	if got != 2 {
+		t.Errorf("onChange called %d times, expected 2 (setup + one change)", got)
 	}
 
 	cancel()
@@ -366,8 +368,8 @@ func TestPollingSource_ChangeBackToOriginal(t *testing.T) {
 
 	// Should have detected both changes.
 	got := count.Load()
-	if got != 2 {
-		t.Errorf("onChange called %d times, want 2", got)
+	if got != 3 {
+		t.Errorf("onChange called %d times, want 3 (setup + two changes)", got)
 	}
 
 	cancel()
@@ -418,6 +420,29 @@ func TestPollingSource_FailedOnChange_RetriesNextTick(t *testing.T) {
 		t.Fatalf("onChange called %d more times after a successful apply", got-settled)
 	}
 
+	cancel()
+	<-done
+}
+
+// Watch applies once at setup so a write landing between the caller's initial
+// fetch and the watch goroutine's baseline capture is not missed.
+func TestPollingSource_AppliesOnceAtSetup(t *testing.T) {
+	inner := &mockSource{data: []byte("v: 1")}
+	ps := source.NewPollingSource(inner, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		ps.Watch(ctx, func() error { calls.Add(1); return nil })
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("onChange called %d times at setup, want exactly 1", got)
+	}
 	cancel()
 	<-done
 }

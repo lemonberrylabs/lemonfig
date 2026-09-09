@@ -222,6 +222,16 @@ func (n *mapNode[T, R]) recompute(b *generationBuilder, old *generation) (any, b
 	if err != nil {
 		return result, false, err
 	}
+	// A node with a cleanup function wraps a resource (a connection pool, a
+	// client with goroutines): its transform only ran because the parent
+	// changed, the new instance is by construction a different resource, and
+	// reflect.DeepEqual over the OLD instance would walk live, mutating
+	// internals (a data race) and could spuriously report "unchanged",
+	// leaking the new instance and never releasing the old one. Treat every
+	// rebuild as a change.
+	if n.cleanup != nil {
+		return result, true, nil
+	}
 	changed := true
 	if old != nil {
 		if oldVal, ok := old.values[n.id_]; ok {
