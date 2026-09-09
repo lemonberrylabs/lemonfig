@@ -53,7 +53,7 @@ func (s *FileSource) Fetch(_ context.Context) ([]byte, string, error) {
 
 // Watch uses fsnotify to watch the file's parent directory for changes.
 // It debounces rapid events and calls onChange when the file is modified.
-func (s *FileSource) Watch(ctx context.Context, onChange func()) error {
+func (s *FileSource) Watch(ctx context.Context, onChange func() error) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
@@ -73,7 +73,10 @@ func (s *FileSource) Watch(ctx context.Context, onChange func()) error {
 	// completes; a write landing in that gap would otherwise be missed
 	// forever. The extra re-fetch is idempotent — unchanged content produces
 	// no observable change downstream.
-	timer = time.AfterFunc(s.debounce, onChange)
+	// A failed apply is not retried here: the file only changes when someone
+	// writes it, and the error surfaces through the caller's own reporting.
+	fire := func() { _ = onChange() }
+	timer = time.AfterFunc(s.debounce, fire)
 
 	for {
 		select {
@@ -93,7 +96,7 @@ func (s *FileSource) Watch(ctx context.Context, onChange func()) error {
 			if timer != nil {
 				timer.Stop()
 			}
-			timer = time.AfterFunc(s.debounce, onChange)
+			timer = time.AfterFunc(s.debounce, fire)
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return nil

@@ -98,7 +98,7 @@ func TestFileSource_Watch_FileCreatedAfterWatch(t *testing.T) {
 	var called atomic.Bool
 	done := make(chan struct{})
 	go func() {
-		src.Watch(ctx, func() { called.Store(true) })
+		src.Watch(ctx, func() error { called.Store(true); return nil })
 		close(done)
 	}()
 
@@ -134,7 +134,7 @@ func TestFileSource_Watch_ContextAlreadyCanceled(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		src.Watch(ctx, func() {})
+		src.Watch(ctx, func() error { return nil })
 		close(done)
 	}()
 
@@ -161,7 +161,7 @@ func TestFileSource_Watch_IgnoresOtherFiles(t *testing.T) {
 	var count atomic.Int32
 	done := make(chan struct{})
 	go func() {
-		src.Watch(ctx, func() { count.Add(1) })
+		src.Watch(ctx, func() error { count.Add(1); return nil })
 		close(done)
 	}()
 
@@ -198,7 +198,7 @@ func TestFileSource_Watch_RapidWritesCoalesce(t *testing.T) {
 	var count atomic.Int32
 	done := make(chan struct{})
 	go func() {
-		src.Watch(ctx, func() { count.Add(1) })
+		src.Watch(ctx, func() error { count.Add(1); return nil })
 		close(done)
 	}()
 
@@ -260,7 +260,7 @@ func TestPollingSource_InnerFetchError_SkipsTick(t *testing.T) {
 	var called atomic.Bool
 	done := make(chan struct{})
 	go func() {
-		ps.Watch(ctx, func() { called.Store(true) })
+		ps.Watch(ctx, func() error { called.Store(true); return nil })
 		close(done)
 	}()
 
@@ -298,7 +298,7 @@ func TestPollingSource_MultipleChangesBetweenPolls(t *testing.T) {
 	var count atomic.Int32
 	done := make(chan struct{})
 	go func() {
-		ps.Watch(ctx, func() { count.Add(1) })
+		ps.Watch(ctx, func() error { count.Add(1); return nil })
 		close(done)
 	}()
 
@@ -350,7 +350,7 @@ func TestPollingSource_ChangeBackToOriginal(t *testing.T) {
 	var count atomic.Int32
 	done := make(chan struct{})
 	go func() {
-		ps.Watch(ctx, func() { count.Add(1) })
+		ps.Watch(ctx, func() error { count.Add(1); return nil })
 		close(done)
 	}()
 
@@ -374,3 +374,50 @@ func TestPollingSource_ChangeBackToOriginal(t *testing.T) {
 	<-done
 }
 
+// A failed apply must not be treated as "seen": the same content is offered
+// again on the next tick until it applies, so a transient failure (secret
+// resolution, dependency rebuild) cannot strand the process on a stale
+// generation until the source happens to change again.
+func TestPollingSource_FailedOnChange_RetriesNextTick(t *testing.T) {
+	inner := &mockSource{data: []byte("v: 1")}
+	ps := source.NewPollingSource(inner, 50*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var calls atomic.Int32
+	var failNext atomic.Bool
+	failNext.Store(true)
+	done := make(chan struct{})
+	go func() {
+		ps.Watch(ctx, func() error {
+			calls.Add(1)
+			if failNext.Load() {
+				return errors.New("apply failed")
+			}
+			return nil
+		})
+		close(done)
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	inner.Set("v: 2")
+
+	// First tick: onChange fails. Subsequent ticks must keep retrying.
+	time.Sleep(180 * time.Millisecond)
+	if got := calls.Load(); got < 2 {
+		t.Fatalf("onChange called %d times while failing; want retries on every tick", got)
+	}
+
+	// Once it applies, the content is remembered and no further calls happen.
+	failNext.Store(false)
+	time.Sleep(120 * time.Millisecond)
+	settled := calls.Load()
+	time.Sleep(200 * time.Millisecond)
+	if got := calls.Load(); got != settled {
+		t.Fatalf("onChange called %d more times after a successful apply", got-settled)
+	}
+
+	cancel()
+	<-done
+}

@@ -64,8 +64,9 @@ func TestFileSource_Watch(t *testing.T) {
 	var called atomic.Bool
 	done := make(chan struct{})
 	go func() {
-		src.Watch(ctx, func() {
+		src.Watch(ctx, func() error {
 			called.Store(true)
+			return nil
 		})
 		close(done)
 	}()
@@ -102,8 +103,9 @@ func TestFileSource_Watch_Debounce(t *testing.T) {
 	var count atomic.Int32
 	done := make(chan struct{})
 	go func() {
-		src.Watch(ctx, func() {
+		src.Watch(ctx, func() error {
 			count.Add(1)
+			return nil
 		})
 		close(done)
 	}()

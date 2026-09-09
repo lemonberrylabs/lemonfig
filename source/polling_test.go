@@ -37,8 +37,9 @@ func TestPollingSource_Interval(t *testing.T) {
 	var called atomic.Bool
 	done := make(chan struct{})
 	go func() {
-		ps.Watch(ctx, func() {
+		ps.Watch(ctx, func() error {
 			called.Store(true)
+			return nil
 		})
 		close(done)
 	}()
@@ -67,8 +68,9 @@ func TestPollingSource_NoChangeNoCallback(t *testing.T) {
 	var count atomic.Int32
 	done := make(chan struct{})
 	go func() {
-		ps.Watch(ctx, func() {
+		ps.Watch(ctx, func() error {
 			count.Add(1)
+			return nil
 		})
 		close(done)
 	}()
@@ -92,7 +94,7 @@ func TestPollingSource_ContextCancel(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		ps.Watch(ctx, func() {})
+		ps.Watch(ctx, func() error { return nil })
 		close(done)
 	}()
 

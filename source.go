@@ -15,11 +15,18 @@ type WatchableSource interface {
 	// It must respect context cancellation and return nil when the
 	// context is done.
 	//
+	// onChange reports whether the caller applied the change. A non-nil
+	// error means the new content was NOT applied (fetch, parse, validation
+	// or a transform failed) and the previous generation is still live;
+	// sources that detect change by comparing against the last content
+	// must keep comparing against the last APPLIED content, so the next
+	// observation retries instead of treating the failed content as seen.
+	//
 	// Implementations whose change detection has a setup window (e.g.
 	// filesystem watchers) should invoke onChange once as soon as watching
 	// is established, so a change landing between the caller's initial
 	// fetch and watch setup is not missed. Spurious invocations are safe:
 	// the caller re-fetches, and unchanged content produces no downstream
 	// change.
-	Watch(ctx context.Context, onChange func()) error
+	Watch(ctx context.Context, onChange func() error) error
 }

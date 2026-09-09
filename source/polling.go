@@ -30,8 +30,12 @@ func (s *PollingSource) Fetch(ctx context.Context) ([]byte, string, error) {
 }
 
 // Watch polls the inner source at the configured interval.
-// It only calls onChange when the fetched bytes differ from the previous poll.
-func (s *PollingSource) Watch(ctx context.Context, onChange func()) error {
+// It calls onChange when the fetched bytes differ from the last content the
+// caller successfully applied. A failed onChange leaves lastData untouched, so
+// the same content is offered again on the next tick until it applies — a
+// transient failure (secret resolution, a dependency rebuild) cannot strand
+// the process on a stale generation until the source happens to change again.
+func (s *PollingSource) Watch(ctx context.Context, onChange func() error) error {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
@@ -51,8 +55,10 @@ func (s *PollingSource) Watch(ctx context.Context, onChange func()) error {
 				continue // skip this tick on error
 			}
 			if !bytes.Equal(data, s.lastData) {
+				if err := onChange(); err != nil {
+					continue // retry the same content on the next tick
+				}
 				s.lastData = data
-				onChange()
 			}
 		}
 	}

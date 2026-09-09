@@ -1058,7 +1058,7 @@ func TestConcurrentReads_DuringReload(t *testing.T) {
 type fakeWatchableSource struct {
 	mu       sync.Mutex
 	data     []byte
-	onChange func()
+	onChange func() error
 	started  chan struct{}
 }
 
@@ -1075,7 +1075,7 @@ func (s *fakeWatchableSource) Fetch(_ context.Context) ([]byte, string, error) {
 	return s.data, "yaml", nil
 }
 
-func (s *fakeWatchableSource) Watch(ctx context.Context, onChange func()) error {
+func (s *fakeWatchableSource) Watch(ctx context.Context, onChange func() error) error {
 	s.mu.Lock()
 	s.onChange = onChange
 	s.mu.Unlock()

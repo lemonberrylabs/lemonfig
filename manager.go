@@ -100,10 +100,12 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.cancel = cancel
 		go func() {
 			defer close(m.done)
-			if err := ws.Watch(watchCtx, func() {
+			if err := ws.Watch(watchCtx, func() error {
 				if err := m.Reload(watchCtx); err != nil {
 					m.cfg.logger.Error("reload failed", "error", err)
+					return err
 				}
+				return nil
 			}); err != nil && watchCtx.Err() == nil {
 				m.cfg.logger.Error("watch error", "error", err)
 			}
