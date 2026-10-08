@@ -13,7 +13,8 @@ import (
 type PollingSource struct {
 	inner    lemonfig.ConfigSource
 	interval time.Duration
-	lastData []byte
+	key      func(ctx context.Context, data []byte) ([]byte, error)
+	lastKey  []byte
 }
 
 // NewPollingSource wraps the given source with polling at the specified interval.
@@ -29,9 +30,24 @@ func (s *PollingSource) Fetch(ctx context.Context) ([]byte, string, error) {
 	return s.inner.Fetch(ctx)
 }
 
+// SetChangeKey implements [lemonfig.ChangeKeyer]: Watch compares key(content)
+// instead of the content itself.
+func (s *PollingSource) SetChangeKey(key func(ctx context.Context, data []byte) ([]byte, error)) {
+	s.key = key
+}
+
+// fetchKey fetches the inner source and returns the value Watch compares.
+func (s *PollingSource) fetchKey(ctx context.Context) ([]byte, error) {
+	data, _, err := s.inner.Fetch(ctx)
+	if err != nil || s.key == nil {
+		return data, err
+	}
+	return s.key(ctx, data)
+}
+
 // Watch polls the inner source at the configured interval.
 // It calls onChange when the fetched bytes differ from the last content the
-// caller successfully applied. A failed onChange leaves lastData untouched, so
+// caller successfully applied. A failed onChange leaves lastKey untouched, so
 // the same content is offered again on the next tick until it applies — a
 // transient failure (secret resolution, a dependency rebuild) cannot strand
 // the process on a stale generation until the source happens to change again.
@@ -43,10 +59,10 @@ func (s *PollingSource) Watch(ctx context.Context, onChange func() error) error 
 	// contract: the caller's own initial fetch happened before this Watch
 	// started, so content that landed in between would otherwise be treated
 	// as already seen and missed until the next change. If the apply fails,
-	// lastData stays nil and the first tick retries.
-	if data, _, err := s.inner.Fetch(ctx); err == nil {
+	// lastKey stays nil and the first tick retries.
+	if key, err := s.fetchKey(ctx); err == nil {
 		if onChange() == nil {
-			s.lastData = data
+			s.lastKey = key
 		}
 	}
 
@@ -55,15 +71,15 @@ func (s *PollingSource) Watch(ctx context.Context, onChange func() error) error 
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			data, _, err := s.inner.Fetch(ctx)
+			key, err := s.fetchKey(ctx)
 			if err != nil {
 				continue // skip this tick on error
 			}
-			if !bytes.Equal(data, s.lastData) {
+			if !bytes.Equal(key, s.lastKey) {
 				if err := onChange(); err != nil {
 					continue // retry the same content on the next tick
 				}
-				s.lastData = data
+				s.lastKey = key
 			}
 		}
 	}

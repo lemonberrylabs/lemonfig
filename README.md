@@ -165,6 +165,49 @@ Wrap with polling for automatic reloads:
 src := source.NewPollingSource(&HTTPSource{URL: "https://config.internal/app"}, 30*time.Second)
 ```
 
+### Secrets
+
+`lemonfig.Secret` is a string value that can be written but not read back by accident. The plaintext is returned only by `Reveal()`. `String`, every `fmt` verb, JSON, text and YAML marshalling, and `slog` print `[REDACTED]` (or an empty string for an empty secret), and a printer that reads unexported fields by reflection sees ciphertext. Two secrets with the same plaintext compare equal under `==` and `reflect.DeepEqual`, so a dependent is rebuilt when a secret rotates and not otherwise.
+
+```go
+type Config struct {
+    DisplayName string          `mapstructure:"display_name"`
+    APIKey      lemonfig.Secret `mapstructure:"api_key"`
+}
+
+client := lemonfig.Map(cfg, func(c Config) (*Client, error) {
+    return NewClient(c.APIKey.Reveal())
+})
+```
+
+A `Secret` field decodes from a plain string, in the document or from an environment variable. Use `lemonfig.NewSecret("...")` in tests and `IsEmpty()` to check for an unset value. To decode the same struct outside a `Manager`, pass `lemonfig.DecodeOption()` to `viper.Unmarshal`.
+
+To load secrets from a secret store, tag the scalar in YAML and give the manager a resolver:
+
+```yaml
+display_name: My App
+api_key: !secret PROD_API_KEY
+```
+
+```go
+mgr, _ := lemonfig.NewManager(src, lemonfig.WithSecretResolver(
+    func(ctx context.Context, name string) (string, error) { return store.Get(ctx, name) },
+))
+```
+
+Rules:
+
+- A `!secret` scalar must land on a `Secret`-typed field of every `Load`, `Struct` or `Key` target that reads its path, and at least one target must read it. Otherwise the reload fails with `ErrSecretTag`, naming the path, and no secret is resolved. `display_name: !secret PROD_API_KEY` is rejected.
+- Tags are accepted on `Secret` fields inside maps and slices of structs, and are followed through YAML aliases and merge keys.
+- A tag on a mapping, a sequence or a mapping key, or with an empty name, fails with `ErrParseFailed`.
+- A `Secret` field may hold an untagged literal.
+- The resolver is called once per distinct name per reload. An error rejects the generation with `ErrSecretResolveFailed` and is logged.
+- The resolved value is a `Secret` inside the Viper instance too: `v.GetString("api_key")` in a validation or `OnReload` callback returns `[REDACTED]`.
+- With `source.PollingSource`, each poll resolves the document's secrets, so a rotated secret triggers a reload when the document has not changed. Other sources pick up a rotation on the next reload.
+- Without `WithSecretResolver`, a `!secret` tag is ignored and its scalar is read as a plain string, as before.
+
+`lemonfig.CheckSecretTags[Config](doc)` reports every tag that does not land on a `Secret` field of `Config`, without a `Manager` and without resolving anything. Use it to reject a document before storing it.
+
 ### Advanced: Key-Based Access
 
 For fine-grained control without a root struct:
@@ -261,6 +304,8 @@ mgr, _ := lemonfig.NewManager(src, lemonfig.WithLogger(ZapAdapter{zapLogger.Suga
 | Fetch error | Old generation preserved, error logged |
 | Parse error | Old generation preserved, error logged |
 | Validation error | Old generation preserved (use `WithValidation`) |
+| `!secret` tag on a non-`Secret` path | Old generation preserved, nothing resolved, error logged |
+| Secret resolver error | Old generation preserved, error logged |
 | Transform error | Entire reload aborted, old generation preserved |
 
 `Manager.Reload()` returns the error for programmatic handling.
