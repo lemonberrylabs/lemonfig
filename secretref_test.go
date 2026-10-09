@@ -798,3 +798,111 @@ func TestSecretResolver_PollingRotation(t *testing.T) {
 		t.Errorf("dependent built %d times, want 3 (v1, v2, v3)", rebuilds)
 	}
 }
+
+func TestDecodeUnresolved(t *testing.T) {
+	const doc = "display_name: app\nurl: from-file\napi_key: !secret A\nproviders:\n  - api_key: '!secret B'\n  - api_key: literal\ntoken: ''"
+	store := newSecretStore("A", "va", "B", "vb")
+
+	t.Setenv("DU_URL", "from-env")
+	configure := lemonfig.WithViperConfigure(func(v *viper.Viper) {
+		v.SetDefault("labels", map[string]string{"d": "default"})
+		v.SetEnvPrefix("DU")
+		v.AutomaticEnv()
+	})
+	validated := false
+	cfg, err := lemonfig.DecodeUnresolved[taggedConfig]([]byte(doc), "yaml", configure,
+		lemonfig.WithSecretResolver(store.resolve),
+		lemonfig.WithValidation(func(v *viper.Viper) error {
+			validated = v.GetString("api_key") == "!secret A"
+			return nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls := store.called(); len(calls) != 0 {
+		t.Errorf("resolver was called: %v", calls)
+	}
+	if !validated {
+		t.Error("validation did not run, or did not see the reference")
+	}
+	if cfg.DisplayName != "app" || cfg.URL != "from-env" || cfg.Labels["d"] != "default" {
+		t.Errorf("plain fields, env override or default wrong: %+v", cfg)
+	}
+
+	for path, s := range map[string]lemonfig.Secret{"api_key A": cfg.APIKey, "providers[0] B": cfg.Providers[0].APIKey} {
+		name := path[len(path)-1:]
+		if !s.IsUnresolved() || s.IsEmpty() || s.Reveal() != "" || s.String() != "!secret "+name {
+			t.Errorf("%s: unresolved=%v empty=%v reveal=%q string=%q", path, s.IsUnresolved(), s.IsEmpty(), s.Reveal(), s)
+		}
+	}
+	if lit := cfg.Providers[1].APIKey; lit.IsUnresolved() || lit.Reveal() != "literal" {
+		t.Errorf("literal secret: unresolved=%v reveal=%q", lit.IsUnresolved(), lit.Reveal())
+	}
+	if !cfg.Token.IsEmpty() || cfg.Token.IsUnresolved() {
+		t.Error("an empty literal must be empty and not unresolved")
+	}
+
+	// A Manager resolves the same document; its secrets differ from the
+	// unresolved ones and are never reported unresolved.
+	mgr, _ := startWithSource(t, doc, configure, lemonfig.WithSecretResolver(store.resolve))
+	live := lemonfig.Load[taggedConfig](mgr)
+	mustStart(t, mgr)
+	if live.Get().APIKey.IsUnresolved() || live.Get().APIKey == cfg.APIKey {
+		t.Error("a resolved secret must differ from an unresolved one")
+	}
+}
+
+// The Secret-field rule and every parse error apply without resolution, and
+// agree with CheckSecretRefs.
+func TestDecodeUnresolved_Rejects(t *testing.T) {
+	t.Parallel()
+	for doc, want := range map[string]error{
+		"display_name: !secret A": lemonfig.ErrSecretRef,
+		"extra: '!secret A'":      lemonfig.ErrSecretRef,
+		"nope: !secret A":         lemonfig.ErrSecretRef,
+		"api_key: !secret ''":     lemonfig.ErrParseFailed,
+		"a: [":                    lemonfig.ErrParseFailed,
+		"api_key: '[REDACTED]'":   lemonfig.ErrTransformFailed,
+		"api_key: 12":             lemonfig.ErrTransformFailed,
+	} {
+		_, err := lemonfig.DecodeUnresolved[taggedConfig]([]byte(doc), "yaml")
+		if !errors.Is(err, want) {
+			t.Errorf("%q: err = %v, want %v", doc, err, want)
+		}
+		bad, checkErr := lemonfig.CheckSecretRefs[taggedConfig]([]byte(doc), "yaml")
+		if rejected := len(bad) > 0; rejected != errors.Is(want, lemonfig.ErrSecretRef) {
+			t.Errorf("%q: CheckSecretRefs = %v (%v), disagrees with DecodeUnresolved", doc, bad, checkErr)
+		}
+	}
+	wantErr := errors.New("invalid")
+	_, err := lemonfig.DecodeUnresolved[taggedConfig]([]byte("api_key: !secret A"), "yaml",
+		lemonfig.WithValidation(func(*viper.Viper) error { return wantErr }))
+	if !errors.Is(err, lemonfig.ErrValidationFailed) || !errors.Is(err, wantErr) {
+		t.Errorf("validation error not returned: %v", err)
+	}
+}
+
+// A one-shot resolved load is a short-lived Manager. Its value equals a
+// long-lived Manager's for the same document and secrets.
+func TestSecretResolver_OneShotManagerEqualsLive(t *testing.T) {
+	t.Parallel()
+	const doc = `{"api_key": "!secret A", "providers": [{"api_key": "!secret B"}], "display_name": "x"}`
+	store := newSecretStore("A", "va", "B", "vb")
+	load := func() taggedConfig {
+		mgr, _ := startWithSource(t, doc, lemonfig.WithConfigType("json"), lemonfig.WithSecretResolver(store.resolve))
+		cfg := lemonfig.Load[taggedConfig](mgr)
+		if err := mgr.Start(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		defer mgr.Stop()
+		return cfg.Get()
+	}
+	boot, live := load(), load()
+	if !reflect.DeepEqual(boot, live) || boot.APIKey != live.APIKey || boot.APIKey.Reveal() != "va" {
+		t.Errorf("one-shot and live loads differ:\n%+v\n%+v", boot, live)
+	}
+	store.set("A", "rotated")
+	if rotated := load(); rotated.APIKey == boot.APIKey {
+		t.Error("a rotated secret compares equal to the old one")
+	}
+}

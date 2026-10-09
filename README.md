@@ -214,6 +214,11 @@ Reloading:
 - Changing `!secret OLD` to `!secret NEW` in the document reloads like any other edit and rebuilds the dependents of that field.
 - With `source.PollingSource`, each poll resolves the document's secrets, so a rotated secret triggers a reload when the document has not changed. Other sources pick up a rotation on the next reload.
 
+Loading without a running manager:
+
+- To load once with secrets resolved, use a short-lived manager: create it, `Load`, `Start`, read the value, `Stop`. Its secrets compare equal to a long-lived manager's.
+- To load without fetching any secret, use `lemonfig.DecodeUnresolved[Config](doc, "yaml", opts...)`. Every check still applies. Each reference becomes an unresolved `Secret`: it prints as `!secret NAME`, is not empty, reports `IsUnresolved()`, and reveals the empty string. A manager never produces one.
+
 `lemonfig.CheckSecretRefs[Config](doc, "yaml")` reports every reference that does not land on a `Secret` field of `Config`, without a `Manager` and without resolving anything. Use it to reject a document before storing it.
 
 ### Advanced: Key-Based Access

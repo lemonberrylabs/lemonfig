@@ -33,6 +33,7 @@ type Manager struct {
 	done    chan struct{}
 
 	eagerRecompute bool // set by TestVal; recompute derived nodes on every addNode
+	unresolved     bool // set by DecodeUnresolved; leave secret references unfetched
 }
 
 // NewManager creates a [Manager] with the given source and options.

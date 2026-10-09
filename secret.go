@@ -46,7 +46,10 @@ const redacted = "[REDACTED]"
 // zero value is the empty secret.
 type Secret struct {
 	sealed string
-	ref    string // the NAME of the `!secret NAME` tag it was resolved from, if any
+	ref    string // the NAME of the `!secret NAME` reference it came from, if any
+	// unresolved marks a reference whose value was never fetched; see
+	// [DecodeUnresolved].
+	unresolved bool
 }
 
 type secretSeal struct {
@@ -86,7 +89,8 @@ func NewSecret(value string) Secret {
 	return Secret{sealed: string(s.aead.Seal(nonce, nonce, []byte(value), nil))}
 }
 
-// Reveal returns the plaintext. It is the only way to read it.
+// Reveal returns the plaintext. It is the only way to read it. It returns
+// the empty string for an unresolved secret (see [Secret.IsUnresolved]).
 func (s Secret) Reveal() string {
 	seal := processSeal()
 	n := seal.aead.NonceSize()
@@ -100,8 +104,14 @@ func (s Secret) Reveal() string {
 	return string(plain)
 }
 
-// IsEmpty reports whether the secret holds the empty string.
-func (s Secret) IsEmpty() bool { return s.sealed == "" }
+// IsEmpty reports whether the secret holds the empty string. An unresolved
+// secret is not empty: it refers to a value that has not been fetched.
+func (s Secret) IsEmpty() bool { return s.sealed == "" && !s.unresolved }
+
+// IsUnresolved reports whether the secret is a reference whose value was
+// never fetched. Only [DecodeUnresolved] produces such a secret; its Reveal
+// returns the empty string.
+func (s Secret) IsUnresolved() bool { return s.unresolved }
 
 // String returns the stand-in described on [Secret], never the plaintext.
 func (s Secret) String() string {

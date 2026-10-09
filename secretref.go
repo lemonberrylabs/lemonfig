@@ -374,6 +374,45 @@ func CheckSecretRefs[T any](doc []byte, format string) ([]SecretRefError, error)
 	return d.violations([]secretTarget{{typ: reflect.TypeFor[T]()}}), nil
 }
 
+// DecodeUnresolved decodes a document into T the way a [Manager] with
+// [Load] does, once, without fetching any secret. Use it where the secret
+// store is out of reach or not wanted: validating a document in CI or before
+// storing it, or reading the settings needed to build a [SecretResolver].
+//
+// Every check a Manager makes still applies, including the rule that a
+// reference must land on a [Secret] field. Each reference decodes to an
+// unresolved Secret: it prints as "!secret NAME", is not empty, reports
+// [Secret.IsUnresolved], reveals the empty string, and is never equal to a
+// resolved one.
+//
+// format is the config type ("yaml", "json", "toml"). Of the options,
+// [WithViperConfigure], [WithValidation] and [WithLogger] apply; a resolver
+// given with [WithSecretResolver] is not called.
+//
+// To load once with secrets resolved, use a Manager: create it, call [Load]
+// and [Manager.Start], read the value, and call [Manager.Stop].
+func DecodeUnresolved[T any](doc []byte, format string, opts ...Option) (T, error) {
+	m, _ := NewManager(bytesSource{data: doc, format: format}, opts...)
+	m.cfg.configType = format
+	m.unresolved = true
+	val := Struct[T](m, "")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.reloadLocked(context.Background()); err != nil {
+		var zero T
+		return zero, err
+	}
+	return val.Get(), nil
+}
+
+// bytesSource is a [ConfigSource] over a document already in memory.
+type bytesSource struct {
+	data   []byte
+	format string
+}
+
+func (s bytesSource) Fetch(context.Context) ([]byte, string, error) { return s.data, s.format, nil }
+
 func isYAML(configType string) bool { return configType == "yaml" || configType == "yml" }
 
 func (m *Manager) secretTargets() []secretTarget {
@@ -400,6 +439,13 @@ func (m *Manager) resolveSecrets(ctx context.Context, d *secretDoc) (map[string]
 	}
 	if len(first) == 0 {
 		return nil, nil
+	}
+	if m.unresolved {
+		values := make(map[string]Secret, len(first))
+		for _, use := range first {
+			values[use.name] = Secret{ref: use.name, unresolved: true}
+		}
+		return values, nil
 	}
 	if m.cfg.secretResolver == nil {
 		use := first[0]
