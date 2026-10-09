@@ -6,22 +6,31 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 const redacted = "[REDACTED]"
 
 // Secret is a string config value whose plaintext is reachable only through
 // [Secret.Reveal]. Every other way of reading it — String, GoString, every
-// fmt verb, JSON, text and YAML marshalling, slog — yields "[REDACTED]", or
-// the empty string when the secret is empty.
+// fmt verb, JSON, text and YAML marshalling, slog — yields a stand-in:
+//
+//   - "!secret NAME" for a secret the [SecretResolver] resolved from a
+//     `!secret NAME` tag. gopkg.in/yaml.v3 marshals it as that tagged scalar,
+//     so a dumped config that is written back resolves the secret again.
+//   - "[REDACTED]" for any other non-empty secret (a literal, an environment
+//     variable, [NewSecret]).
+//   - "" for an empty secret that has no name.
 //
 // The plaintext is not stored in the struct. It is sealed with a key generated
 // once per process, so a printer that reads unexported fields by reflection
@@ -29,15 +38,17 @@ const redacted = "[REDACTED]"
 // ciphertext. The ciphertext does reveal the secret's length.
 //
 // Sealing is deterministic within a process: two Secrets holding the same
-// plaintext are equal under == and [reflect.DeepEqual], and different
-// plaintexts are unequal. [Map] and [Combine] therefore recompute dependents
-// when a secret rotates and not otherwise.
+// plaintext, resolved from the same name or both from no name, are equal
+// under == and [reflect.DeepEqual], and different plaintexts are unequal.
+// [Map] and [Combine] therefore recompute dependents when a secret rotates
+// (or its tag is renamed) and not otherwise.
 //
 // A Secret field decodes from a plain string through [Load] and [Struct],
 // whether the string comes from the document or an environment variable. The
 // zero value is the empty secret.
 type Secret struct {
 	sealed string
+	ref    string // the NAME of the `!secret NAME` tag it was resolved from, if any
 }
 
 type secretSeal struct {
@@ -94,9 +105,12 @@ func (s Secret) Reveal() string {
 // IsEmpty reports whether the secret holds the empty string.
 func (s Secret) IsEmpty() bool { return s.sealed == "" }
 
-// String returns "[REDACTED]", or "" for an empty secret.
+// String returns the stand-in described on [Secret], never the plaintext.
 func (s Secret) String() string {
-	if s.IsEmpty() {
+	switch {
+	case s.ref != "":
+		return secretTag + " " + s.ref
+	case s.IsEmpty():
 		return ""
 	}
 	return redacted
@@ -104,7 +118,7 @@ func (s Secret) String() string {
 
 // GoString implements [fmt.GoStringer] without the plaintext.
 func (s Secret) GoString() string {
-	return fmt.Sprintf("lemonfig.NewSecret(%q)", s.String())
+	return "lemonfig.Secret(" + s.String() + ")"
 }
 
 // Format implements [fmt.Formatter] so that no verb prints the plaintext.
@@ -123,11 +137,19 @@ func (s Secret) Format(f fmt.State, verb rune) {
 func (s Secret) MarshalText() ([]byte, error) { return []byte(s.String()), nil }
 
 // MarshalJSON implements [json.Marshaler] without the plaintext.
-func (s Secret) MarshalJSON() ([]byte, error) { return []byte(`"` + s.String() + `"`), nil }
+func (s Secret) MarshalJSON() ([]byte, error) { return json.Marshal(s.String()) }
 
-// MarshalYAML implements the yaml.v3 Marshaler interface without the plaintext.
-// It returns any because that interface requires it.
-func (s Secret) MarshalYAML() (any, error) { return s.String(), nil }
+// MarshalYAML implements the yaml.v3 Marshaler interface without the
+// plaintext. A secret resolved from a tag marshals as the `!secret NAME`
+// scalar it came from; that form needs gopkg.in/yaml.v3, because other YAML
+// libraries do not understand its node type. It returns any because the
+// interface requires it.
+func (s Secret) MarshalYAML() (any, error) {
+	if s.ref != "" {
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: secretTag, Value: s.ref}, nil
+	}
+	return s.String(), nil
+}
 
 // LogValue implements [slog.LogValuer] without the plaintext.
 func (s Secret) LogValue() slog.Value { return slog.StringValue(s.String()) }
@@ -139,9 +161,10 @@ var secretType = reflect.TypeFor[Secret]()
 // [DecodeOption], when decoding the same struct outside a [Manager].
 //
 // Only strings decode: a YAML number or boolean on a Secret field is an error,
-// so quote such values in the document. The string "[REDACTED]" is an error
-// too: it is what a Secret prints as, so it only appears as a value when a
-// redacted dump of the config is written back.
+// so quote such values in the document. The strings "[REDACTED]" and
+// "!secret NAME" are errors too: they are what a Secret prints as, so they
+// only appear as plain values when a dump of the config is written back in a
+// form that lost the YAML tag (JSON, or a quoted string).
 func SecretDecodeHook() mapstructure.DecodeHookFunc {
 	return func(from, to reflect.Type, data any) (any, error) {
 		if to != secretType {
@@ -151,9 +174,12 @@ func SecretDecodeHook() mapstructure.DecodeHookFunc {
 		case Secret:
 			return v, nil
 		case string:
+			// The output of a dump fed back in as config.
 			if v == redacted {
-				// The output of a redacted dump was fed back in as config.
 				return nil, fmt.Errorf("lemonfig: the value is the redaction marker %s, not a secret", redacted)
+			}
+			if strings.HasPrefix(v, secretTag+" ") {
+				return nil, fmt.Errorf("lemonfig: the value is a %s reference written as a plain string; write it as an unquoted YAML tag", secretTag)
 			}
 			return NewSecret(v), nil
 		}

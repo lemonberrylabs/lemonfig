@@ -2,6 +2,7 @@ package lemonfig_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"github.com/lemonberrylabs/lemonfig"
 	"github.com/lemonberrylabs/lemonfig/source"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 // secretStore is a SecretResolver backed by a map, recording every call.
@@ -289,8 +291,8 @@ func TestSecretResolver_ViperNeverHoldsPlaintext(t *testing.T) {
 			t.Errorf("Viper returned the plaintext: %s", s)
 		}
 	}
-	if seen[0] != "[REDACTED]" {
-		t.Errorf("GetString = %q, want [REDACTED]", seen[0])
+	if seen[0] != "!secret A" {
+		t.Errorf("GetString = %q, want the tag it was resolved from", seen[0])
 	}
 }
 
@@ -355,6 +357,76 @@ func TestSecretResolver_ResolverError(t *testing.T) {
 	}
 	if cfg.Get().APIKey.Reveal() != "va" {
 		t.Error("generation changed after a failed resolution")
+	}
+}
+
+// A secret resolved from a tag prints and marshals as that tag, so a config
+// dumped as YAML and written back resolves the secret again instead of
+// storing a stand-in as its value.
+func TestSecretResolver_TagRoundTrips(t *testing.T) {
+	t.Parallel()
+	type dumpable struct {
+		Name   string          `mapstructure:"name" yaml:"name" json:"name"`
+		APIKey lemonfig.Secret `mapstructure:"api_key" yaml:"api_key" json:"api_key"`
+		Local  lemonfig.Secret `mapstructure:"local" yaml:"local" json:"local"`
+	}
+	const value = "resolved-plaintext"
+	store := newSecretStore("A", value)
+	mgr, src := startWithSource(t, "name: n\napi_key: !secret A\nlocal: lit", lemonfig.WithSecretResolver(store.resolve))
+	cfg := lemonfig.Load[dumpable](mgr)
+	mustStart(t, mgr)
+	loaded := cfg.Get()
+
+	asYAML, err := yaml.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asJSON, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	printed := fmt.Sprintf("%v %+v %#v %s", loaded, loaded, loaded, loaded.APIKey)
+	for name, out := range map[string]string{"yaml": string(asYAML), "json": string(asJSON), "fmt": printed} {
+		if strings.Contains(out, value) || strings.Contains(out, "lit") {
+			t.Errorf("%s output leaks a plaintext: %s", name, out)
+		}
+	}
+	if want := "name: \"n\"\napi_key: !secret A\nlocal: '[REDACTED]'\n"; string(asYAML) != want {
+		t.Errorf("yaml = %q, want %q", asYAML, want)
+	}
+	if want := `{"name":"n","api_key":"!secret A","local":"[REDACTED]"}`; string(asJSON) != want {
+		t.Errorf("json = %s, want %s", asJSON, want)
+	}
+	if got := loaded.APIKey.String(); got != "!secret A" {
+		t.Errorf("String() = %q, want %q", got, "!secret A")
+	}
+
+	// Writing the tagged field back as dumped resolves it again, picking up
+	// the current value of the secret.
+	store.set("A", "rotated")
+	before := len(store.called())
+	src.Set("name: n2\napi_key: !secret A\nlocal: lit")
+	if err := mgr.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Get(); got.APIKey.Reveal() != "rotated" || got.Name != "n2" {
+		t.Errorf("after write-back: key %q name %q", got.APIKey.Reveal(), got.Name)
+	}
+	if len(store.called()) != before+1 {
+		t.Errorf("write-back did not resolve the secret again")
+	}
+
+	// The same reference as a plain string (a JSON dump, or a quoted YAML
+	// scalar) has lost the tag. It is rejected, not stored as the value.
+	for _, doc := range []string{`api_key: "!secret A"`, string(asJSON)} {
+		src.Set(doc)
+		err := mgr.Reload(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "plain string") {
+			t.Errorf("%s: err = %v, want the plain-string reference error", doc, err)
+		}
+		if got := cfg.Get().APIKey.Reveal(); got != "rotated" {
+			t.Errorf("%s: secret = %q after the rejected reload", doc, got)
+		}
 	}
 }
 

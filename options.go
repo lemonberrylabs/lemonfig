@@ -42,7 +42,8 @@ func WithViperConfigure(fn func(*viper.Viper)) Option {
 
 // WithSecretResolver makes the Manager resolve `!secret NAME` scalars in YAML
 // documents by calling r with NAME. The resolved value reaches the config only
-// as a [Secret]: it is never a string inside the Viper instance.
+// as a [Secret]: it is never a string inside the Viper instance, and it prints
+// and marshals as the tag it came from.
 //
 // Every tagged scalar must land on a [Secret]-typed field of every [Load],
 // [Struct] or [Key] target that reads its path, and at least one target must

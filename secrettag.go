@@ -364,7 +364,9 @@ func (m *Manager) resolveSecrets(ctx context.Context, d *taggedDoc) (map[string]
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s (at %s): %w", ErrSecretResolveFailed, name, formatPath(use.path), err)
 		}
-		values[name] = NewSecret(v)
+		sec := NewSecret(v)
+		sec.ref = name
+		values[name] = sec
 	}
 	return values, nil
 }

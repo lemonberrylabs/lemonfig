@@ -76,10 +76,10 @@ func TestSecret_RedactsEveryRead(t *testing.T) {
 		want string // exact output; empty means only the leak check applies
 	}{
 		{"String", s.String(), "[REDACTED]"},
-		{"GoString", s.GoString(), `lemonfig.NewSecret("[REDACTED]")`},
+		{"GoString", s.GoString(), `lemonfig.Secret([REDACTED])`},
 		{"%v", fmt.Sprintf("%v", s), "[REDACTED]"},
 		{"%+v", fmt.Sprintf("%+v", s), "[REDACTED]"},
-		{"%#v", fmt.Sprintf("%#v", s), `lemonfig.NewSecret("[REDACTED]")`},
+		{"%#v", fmt.Sprintf("%#v", s), `lemonfig.Secret([REDACTED])`},
 		{"%s", fmt.Sprintf("%s", s), "[REDACTED]"},
 		{"%q", fmt.Sprintf("%q", s), `"[REDACTED]"`},
 		{"%x", fmt.Sprintf("%x", s), "[REDACTED]"},

@@ -167,7 +167,7 @@ src := source.NewPollingSource(&HTTPSource{URL: "https://config.internal/app"}, 
 
 ### Secrets
 
-`lemonfig.Secret` is a string value that can be written but not read back by accident. The plaintext is returned only by `Reveal()`. `String`, every `fmt` verb, JSON, text and YAML marshalling, and `slog` print `[REDACTED]` (or an empty string for an empty secret), and a printer that reads unexported fields by reflection sees ciphertext. Two secrets with the same plaintext compare equal under `==` and `reflect.DeepEqual`, so a dependent is rebuilt when a secret rotates and not otherwise.
+`lemonfig.Secret` is a string value that can be written but not read back by accident. The plaintext is returned only by `Reveal()`. `String`, every `fmt` verb, JSON, text and YAML marshalling, and `slog` print a stand-in: `!secret NAME` for a secret resolved from that tag, `[REDACTED]` for any other non-empty secret, and an empty string for an empty one. A printer that reads unexported fields by reflection sees ciphertext. Two secrets with the same plaintext compare equal under `==` and `reflect.DeepEqual`, provided both were resolved from the same name or both from none, so a dependent is rebuilt when a secret rotates and not otherwise.
 
 ```go
 type Config struct {
@@ -180,7 +180,7 @@ client := lemonfig.Map(cfg, func(c Config) (*Client, error) {
 })
 ```
 
-A `Secret` field decodes from a plain string, in the document or from an environment variable. The literal `[REDACTED]` is rejected as a value, so a redacted dump of the config cannot be written back as the secret. Use `lemonfig.NewSecret("...")` in tests and `IsEmpty()` to check for an unset value. To decode the same struct outside a `Manager`, pass `lemonfig.DecodeOption()` to `viper.Unmarshal`.
+A `Secret` field decodes from a plain string, in the document or from an environment variable. Use `lemonfig.NewSecret("...")` in tests and `IsEmpty()` to check for an unset value. To decode the same struct outside a `Manager`, pass `lemonfig.DecodeOption()` to `viper.Unmarshal`.
 
 To load secrets from a secret store, tag the scalar in YAML and give the manager a resolver:
 
@@ -202,8 +202,9 @@ Rules:
 - A tag on a mapping, a sequence or a mapping key, or with an empty name, fails with `ErrParseFailed`.
 - A `Secret` field may hold an untagged literal.
 - The resolver is called once per distinct name per reload. An error rejects the generation with `ErrSecretResolveFailed` and is logged.
-- The resolved value is a `Secret` inside the Viper instance too: `v.GetString("api_key")` in a validation or `OnReload` callback returns `[REDACTED]`.
+- The resolved value is a `Secret` inside the Viper instance too: `v.GetString("api_key")` in a validation or `OnReload` callback returns `!secret PROD_API_KEY`.
 - With `source.PollingSource`, each poll resolves the document's secrets, so a rotated secret triggers a reload when the document has not changed. Other sources pick up a rotation on the next reload.
+- A resolved secret marshals back to its tag. A config dumped with `gopkg.in/yaml.v3` contains `api_key: !secret PROD_API_KEY`, and writing that dump back resolves the secret again. The plain strings `[REDACTED]` and `!secret NAME` (a JSON dump, a quoted YAML scalar, another YAML library) are rejected as values of a `Secret` field, so a dump can never be stored as the secret itself.
 - Without `WithSecretResolver`, a `!secret` tag is ignored and its scalar is read as a plain string, as before.
 
 `lemonfig.CheckSecretTags[Config](doc)` reports every tag that does not land on a `Secret` field of `Config`, without a `Manager` and without resolving anything. Use it to reject a document before storing it.
