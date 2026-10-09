@@ -2,6 +2,7 @@ package lemonfig
 
 import (
 	"reflect"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -85,6 +86,10 @@ func (n *keyNode[T]) nodeID() derivedID    { return n.id_ }
 func (n *keyNode[T]) parents() []derivedID { return nil }
 func (n *keyNode[T]) cleanupOld(any)       {}
 
+func (n *keyNode[T]) secretTarget() secretTarget {
+	return secretTarget{path: splitKeyPath(n.path), typ: reflect.TypeFor[T]()}
+}
+
 func (n *keyNode[T]) recompute(b *generationBuilder, old *generation) (any, bool, error) {
 	val := viperGet[T](b.config, n.path)
 	changed := true
@@ -94,6 +99,14 @@ func (n *keyNode[T]) recompute(b *generationBuilder, old *generation) (any, bool
 		}
 	}
 	return val, changed, nil
+}
+
+// splitKeyPath splits a Viper key path into its keys; "" is the document root.
+func splitKeyPath(path string) []string {
+	if path == "" {
+		return nil
+	}
+	return strings.Split(path, ".")
 }
 
 // viperGet extracts a value of type T from a Viper instance at the given path.
@@ -151,6 +164,10 @@ func (n *structNode[T]) nodeID() derivedID    { return n.id_ }
 func (n *structNode[T]) parents() []derivedID { return nil }
 func (n *structNode[T]) cleanupOld(any)       {}
 
+func (n *structNode[T]) secretTarget() secretTarget {
+	return secretTarget{path: splitKeyPath(n.path), typ: reflect.TypeFor[T]()}
+}
+
 func (n *structNode[T]) recompute(b *generationBuilder, old *generation) (any, bool, error) {
 	var val T
 	sub := b.config
@@ -167,7 +184,7 @@ func (n *structNode[T]) recompute(b *generationBuilder, old *generation) (any, b
 			return val, changed, nil
 		}
 	}
-	if err := sub.Unmarshal(&val); err != nil {
+	if err := sub.Unmarshal(&val, DecodeOption()); err != nil {
 		return val, false, err
 	}
 	changed := true

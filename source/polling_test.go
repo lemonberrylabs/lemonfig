@@ -2,6 +2,7 @@ package source_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -107,4 +108,67 @@ func TestPollingSource_ContextCancel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Watch did not exit after context cancel")
 	}
+}
+
+// With a change key installed, Watch compares key(content): a key that
+// changes while the content does not is a change, and a key error skips the
+// tick and is retried on the next one.
+func TestPollingSource_ChangeKey(t *testing.T) {
+	inner := &mockSource{data: []byte("v: 1")}
+	ps := source.NewPollingSource(inner, 10*time.Millisecond)
+
+	var extra atomic.Value // state outside the content
+	extra.Store("a")
+	var failing atomic.Bool
+	var keyErrs atomic.Int32
+	ps.SetChangeKey(func(_ context.Context, data []byte, _ string) ([]byte, error) {
+		if failing.Load() {
+			keyErrs.Add(1)
+			return nil, errors.New("key unavailable")
+		}
+		return append(data, extra.Load().(string)...), nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var count atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		ps.Watch(ctx, func() error {
+			count.Add(1)
+			return nil
+		})
+		close(done)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	waitFor := func(what string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for !cond() {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s (onChange calls: %d)", what, count.Load())
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+
+	waitFor("setup apply", func() bool { return count.Load() == 1 })
+	time.Sleep(60 * time.Millisecond)
+	if n := count.Load(); n != 1 {
+		t.Fatalf("onChange called %d times with an unchanged key, want 1", n)
+	}
+
+	extra.Store("b")
+	waitFor("key change", func() bool { return count.Load() == 2 })
+
+	failing.Store(true)
+	extra.Store("c")
+	waitFor("failed key attempts", func() bool { return keyErrs.Load() >= 3 })
+	if n := count.Load(); n != 2 {
+		t.Fatalf("onChange called %d times while the key was failing, want 2", n)
+	}
+	failing.Store(false)
+	waitFor("retry after key recovery", func() bool { return count.Load() == 3 })
 }

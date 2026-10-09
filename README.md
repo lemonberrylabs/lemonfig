@@ -165,6 +165,62 @@ Wrap with polling for automatic reloads:
 src := source.NewPollingSource(&HTTPSource{URL: "https://config.internal/app"}, 30*time.Second)
 ```
 
+### Secrets
+
+`lemonfig.Secret` is a string value that can be written but not read back by accident. The plaintext is returned only by `Reveal()`. `String`, every `fmt` verb, JSON, text and YAML marshalling, and `slog` print a stand-in: `!secret NAME` for a secret resolved from that tag, `[REDACTED]` for any other non-empty secret, and an empty string for an empty one. A printer that reads unexported fields by reflection sees ciphertext. Two secrets with the same plaintext compare equal under `==` and `reflect.DeepEqual`, provided both were resolved from the same name or both from none, so a dependent is rebuilt when a secret rotates and not otherwise.
+
+```go
+type Config struct {
+    DisplayName string          `mapstructure:"display_name"`
+    APIKey      lemonfig.Secret `mapstructure:"api_key"`
+}
+
+client := lemonfig.Map(cfg, func(c Config) (*Client, error) {
+    return NewClient(c.APIKey.Reveal())
+})
+```
+
+A `Secret` field decodes from a plain string, in the document or from an environment variable. Use `lemonfig.NewSecret("...")` in tests and `IsEmpty()` to check for an unset value. To decode the same struct outside a `Manager`, pass `lemonfig.DecodeOption()` to `viper.Unmarshal`.
+
+To load a secret from a secret store, write a reference in the document and give the manager a resolver:
+
+```yaml
+display_name: My App
+api_key: !secret PROD_API_KEY
+```
+
+```go
+mgr, _ := lemonfig.NewManager(src, lemonfig.WithSecretResolver(
+    func(ctx context.Context, name string) (string, error) { return store.Get(ctx, name) },
+))
+```
+
+A reference is the string `!secret NAME`, in any format: `"api_key": "!secret PROD_API_KEY"` in JSON is the same reference. In YAML it can also be written as the tag above. To use a literal string that starts with `!secret `, write `!!secret ...`; one leading `!` is removed.
+
+Who owns what:
+
+- **Your config struct** says which fields are secrets, with the type `lemonfig.Secret`.
+- **The document** says which secret a field points at, with `!secret NAME`.
+- **Your resolver** fetches a secret by name.
+- **lemonfig** enforces the rest:
+  - A reference must land on a `Secret` field of every `Load`, `Struct` or `Key` target that reads its path, and at least one target must read it. Otherwise the reload fails with `ErrSecretRef`, naming the path, and nothing is resolved. `display_name: !secret PROD_API_KEY` is rejected.
+  - References are accepted on `Secret` fields inside maps and slices of structs, and are followed through YAML aliases and merge keys.
+  - The resolver is called once per distinct name per reload, up to 8 calls at a time, so it must be safe for concurrent use. An error rejects the generation with `ErrSecretResolveFailed` and is logged. So does a resolved value that is itself a reference, and a reference in a document when no resolver is configured.
+  - The resolved value is a `Secret` inside the Viper instance too: `v.GetString("api_key")` in a validation or `OnReload` callback returns `!secret PROD_API_KEY`.
+  - A resolved secret prints and marshals as its reference, so a config dumped as YAML or JSON and written back resolves the secret again. A literal secret prints `[REDACTED]`, and that marker is rejected as a value, so a dump can never be stored as the secret itself.
+
+Reloading:
+
+- Changing `!secret OLD` to `!secret NEW` in the document reloads like any other edit and rebuilds the dependents of that field.
+- With `source.PollingSource`, each poll resolves the document's secrets, so a rotated secret triggers a reload when the document has not changed. Other sources pick up a rotation on the next reload.
+
+Loading without a running manager:
+
+- To load once with secrets resolved, use a short-lived manager: create it, `Load`, `Start`, read the value, `Stop`. Its secrets compare equal to a long-lived manager's.
+- To load without fetching any secret, use `lemonfig.DecodeUnresolved[Config](doc, "yaml", opts...)`. Every check still applies. Each reference becomes an unresolved `Secret`: it prints as `!secret NAME`, is not empty, reports `IsUnresolved()`, and reveals the empty string. A manager never produces one.
+
+`lemonfig.CheckSecretRefs[Config](doc, "yaml")` reports every reference that does not land on a `Secret` field of `Config`, without a `Manager` and without resolving anything. Use it to reject a document before storing it.
+
 ### Advanced: Key-Based Access
 
 For fine-grained control without a root struct:
@@ -261,6 +317,8 @@ mgr, _ := lemonfig.NewManager(src, lemonfig.WithLogger(ZapAdapter{zapLogger.Suga
 | Fetch error | Old generation preserved, error logged |
 | Parse error | Old generation preserved, error logged |
 | Validation error | Old generation preserved (use `WithValidation`) |
+| Secret reference on a non-`Secret` path | Old generation preserved, nothing resolved, error logged |
+| Secret resolver error | Old generation preserved, error logged |
 | Transform error | Entire reload aborted, old generation preserved |
 
 `Manager.Reload()` returns the error for programmatic handling.
