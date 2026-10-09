@@ -139,7 +139,9 @@ var secretType = reflect.TypeFor[Secret]()
 // [DecodeOption], when decoding the same struct outside a [Manager].
 //
 // Only strings decode: a YAML number or boolean on a Secret field is an error,
-// so quote such values in the document.
+// so quote such values in the document. The string "[REDACTED]" is an error
+// too: it is what a Secret prints as, so it only appears as a value when a
+// redacted dump of the config is written back.
 func SecretDecodeHook() mapstructure.DecodeHookFunc {
 	return func(from, to reflect.Type, data any) (any, error) {
 		if to != secretType {
@@ -149,6 +151,10 @@ func SecretDecodeHook() mapstructure.DecodeHookFunc {
 		case Secret:
 			return v, nil
 		case string:
+			if v == redacted {
+				// The output of a redacted dump was fed back in as config.
+				return nil, fmt.Errorf("lemonfig: the value is the redaction marker %s, not a secret", redacted)
+			}
 			return NewSecret(v), nil
 		}
 		return nil, fmt.Errorf("lemonfig: cannot decode %s into Secret: the value must be a string", from)

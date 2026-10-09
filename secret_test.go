@@ -264,6 +264,28 @@ func TestSecret_NonStringLiteralRejected(t *testing.T) {
 	}
 }
 
+// A config dumped through a Secret's redacting marshallers and written back
+// must not turn the marker into the secret's value.
+func TestSecret_RedactionMarkerRejected(t *testing.T) {
+	t.Parallel()
+	dumped, err := yaml.Marshal(map[string]any{"api_key": lemonfig.NewSecret("real")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, src := startWithSource(t, "api_key: real")
+	cfg := lemonfig.Load[secretConfig](mgr)
+	mustStart(t, mgr)
+
+	src.Set(string(dumped))
+	err = mgr.Reload(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "redaction marker") || !strings.Contains(err.Error(), "api_key") {
+		t.Fatalf("err = %v, want a redaction-marker error naming api_key", err)
+	}
+	if got := cfg.Get().APIKey.Reveal(); got != "real" {
+		t.Errorf("secret = %q after the rejected reload, want it unchanged", got)
+	}
+}
+
 func TestDecodeOption_ViperUnmarshal(t *testing.T) {
 	t.Parallel()
 	v := viper.New()

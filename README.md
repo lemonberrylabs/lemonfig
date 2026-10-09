@@ -180,7 +180,7 @@ client := lemonfig.Map(cfg, func(c Config) (*Client, error) {
 })
 ```
 
-A `Secret` field decodes from a plain string, in the document or from an environment variable. Use `lemonfig.NewSecret("...")` in tests and `IsEmpty()` to check for an unset value. To decode the same struct outside a `Manager`, pass `lemonfig.DecodeOption()` to `viper.Unmarshal`.
+A `Secret` field decodes from a plain string, in the document or from an environment variable. The literal `[REDACTED]` is rejected as a value, so a redacted dump of the config cannot be written back as the secret. Use `lemonfig.NewSecret("...")` in tests and `IsEmpty()` to check for an unset value. To decode the same struct outside a `Manager`, pass `lemonfig.DecodeOption()` to `viper.Unmarshal`.
 
 To load secrets from a secret store, tag the scalar in YAML and give the manager a resolver:
 
