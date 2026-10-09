@@ -40,27 +40,34 @@ func WithViperConfigure(fn func(*viper.Viper)) Option {
 	return func(c *managerConfig) { c.viperConfigure = append(c.viperConfigure, fn) }
 }
 
-// WithSecretResolver makes the Manager resolve `!secret NAME` scalars in YAML
-// documents by calling r with NAME. The resolved value reaches the config only
-// as a [Secret]: it is never a string inside the Viper instance, and it prints
-// and marshals as the tag it came from.
+// WithSecretResolver sets the function that turns a secret reference in the
+// document into its value.
 //
-// Every tagged scalar must land on a [Secret]-typed field of every [Load],
-// [Struct] or [Key] target that reads its path, and at least one target must
-// read it. Otherwise the reload fails with [ErrSecretTag], naming the path,
-// and no secret is resolved. Tags are followed through maps, slices, YAML
-// aliases and merge keys. A Secret field may also hold an untagged literal.
+// A reference is the string "!secret NAME" in any config format; in YAML it
+// can also be written as the tag `!secret NAME`. To use a literal string that
+// starts with "!secret ", write "!!secret ...": one leading "!" is removed.
 //
-// Each reload calls r once per distinct name. A failure rejects the
-// generation with [ErrSecretResolveFailed] and is reported to the [Logger].
+// The Manager owns what happens to a reference:
+//
+//   - It must land on a [Secret]-typed field of every [Load], [Struct] or
+//     [Key] target that reads its path, and at least one target must read it.
+//     Otherwise the reload fails with [ErrSecretRef], naming the path, and
+//     nothing is resolved. References are followed through maps, slices, YAML
+//     aliases and merge keys.
+//   - r is called once per distinct name per reload, with up to 8 calls
+//     running at once. A failure rejects the generation with
+//     [ErrSecretResolveFailed] and is reported to the [Logger]. So does a
+//     resolved value that is itself a reference: references are not chained.
+//   - The value reaches the config only as a [Secret]. It is never a string
+//     inside the Viper instance, and it prints and marshals as "!secret NAME".
+//
+// A Secret field may also hold a literal that is not a reference. A document
+// with a reference and no resolver is rejected.
 //
 // To pick up a rotated secret while the document is unchanged, the source
 // must implement [ChangeKeyer], as source.PollingSource does: each poll then
 // resolves the document's secrets and a changed value triggers a reload.
 // With other sources, call [Manager.Reload].
-//
-// Without this option a !secret tag is ignored and its scalar is read as a
-// plain string. The option has no effect on formats other than YAML.
 func WithSecretResolver(r SecretResolver) Option {
 	return func(c *managerConfig) { c.secretResolver = r }
 }

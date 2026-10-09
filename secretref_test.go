@@ -192,12 +192,12 @@ func TestSecretResolver_RejectsTagOffSecretField(t *testing.T) {
 				mgr.Stop()
 				t.Fatal("generation accepted")
 			}
-			if !errors.Is(err, lemonfig.ErrSecretTag) {
-				t.Fatalf("err = %v, want ErrSecretTag", err)
+			if !errors.Is(err, lemonfig.ErrSecretRef) {
+				t.Fatalf("err = %v, want ErrSecretRef", err)
 			}
-			var tagErr lemonfig.SecretTagError
+			var tagErr lemonfig.SecretRefError
 			if !errors.As(err, &tagErr) || tagErr.Path != tt.wantPath || tagErr.Name != "A" {
-				t.Errorf("SecretTagError = %+v, want path %q name A (err: %v)", tagErr, tt.wantPath, err)
+				t.Errorf("SecretRefError = %+v, want path %q name A (err: %v)", tagErr, tt.wantPath, err)
 			}
 			if calls := store.called(); len(calls) != 0 {
 				t.Errorf("resolver was called for a rejected document: %v", calls)
@@ -246,8 +246,8 @@ func TestSecretResolver_RejectedReloadKeepsGeneration(t *testing.T) {
 	mustStart(t, mgr)
 
 	src.Set("api_key: !secret A\ndisplay_name: !secret A")
-	if err := mgr.Reload(context.Background()); !errors.Is(err, lemonfig.ErrSecretTag) {
-		t.Fatalf("err = %v, want ErrSecretTag", err)
+	if err := mgr.Reload(context.Background()); !errors.Is(err, lemonfig.ErrSecretRef) {
+		t.Fatalf("err = %v, want ErrSecretRef", err)
 	}
 	if c := cfg.Get(); c.DisplayName != "ok" || c.APIKey.Reveal() != "va" {
 		t.Errorf("generation changed after a rejected reload: %+v", c)
@@ -319,16 +319,16 @@ func TestSecretResolver_KeyAndStructTargets(t *testing.T) {
 		mgr, _ := startWithSource(t, doc, lemonfig.WithSecretResolver(newSecretStore("A", "va").resolve))
 		lemonfig.Struct[db](mgr, "db")
 		lemonfig.Key[string](mgr, "db.password")
-		if err := mgr.Start(context.Background()); !errors.Is(err, lemonfig.ErrSecretTag) {
-			t.Errorf("err = %v, want ErrSecretTag", err)
+		if err := mgr.Start(context.Background()); !errors.Is(err, lemonfig.ErrSecretRef) {
+			t.Errorf("err = %v, want ErrSecretRef", err)
 		}
 	})
 	t.Run("no target reads the path", func(t *testing.T) {
 		t.Parallel()
 		mgr, _ := startWithSource(t, doc, lemonfig.WithSecretResolver(newSecretStore("A", "va").resolve))
 		lemonfig.Key[string](mgr, "db.host")
-		if err := mgr.Start(context.Background()); !errors.Is(err, lemonfig.ErrSecretTag) {
-			t.Errorf("err = %v, want ErrSecretTag", err)
+		if err := mgr.Start(context.Background()); !errors.Is(err, lemonfig.ErrSecretRef) {
+			t.Errorf("err = %v, want ErrSecretRef", err)
 		}
 	})
 }
@@ -391,7 +391,7 @@ func TestSecretResolver_TagRoundTrips(t *testing.T) {
 			t.Errorf("%s output leaks a plaintext: %s", name, out)
 		}
 	}
-	if want := "name: \"n\"\napi_key: !secret A\nlocal: '[REDACTED]'\n"; string(asYAML) != want {
+	if want := "name: \"n\"\napi_key: '!secret A'\nlocal: '[REDACTED]'\n"; string(asYAML) != want {
 		t.Errorf("yaml = %q, want %q", asYAML, want)
 	}
 	if want := `{"name":"n","api_key":"!secret A","local":"[REDACTED]"}`; string(asJSON) != want {
@@ -401,40 +401,217 @@ func TestSecretResolver_TagRoundTrips(t *testing.T) {
 		t.Errorf("String() = %q, want %q", got, "!secret A")
 	}
 
-	// Writing the tagged field back as dumped resolves it again, picking up
-	// the current value of the secret.
-	store.set("A", "rotated")
-	before := len(store.called())
-	src.Set("name: n2\napi_key: !secret A\nlocal: lit")
-	if err := mgr.Reload(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := cfg.Get(); got.APIKey.Reveal() != "rotated" || got.Name != "n2" {
-		t.Errorf("after write-back: key %q name %q", got.APIKey.Reveal(), got.Name)
-	}
-	if len(store.called()) != before+1 {
-		t.Errorf("write-back did not resolve the secret again")
+	// Each dump, written back with the literal secret restored, resolves the
+	// reference again and picks up the current value.
+	for i, doc := range []string{
+		strings.Replace(string(asYAML), "'[REDACTED]'", "lit", 1),
+		strings.Replace(string(asJSON), "[REDACTED]", "lit", 1),
+	} {
+		rotated := fmt.Sprintf("rotated-%d", i)
+		store.set("A", rotated)
+		before := len(store.called())
+		src.Set(doc)
+		if err := mgr.Reload(context.Background()); err != nil {
+			t.Fatalf("write-back %d: %v", i, err)
+		}
+		if got := cfg.Get().APIKey.Reveal(); got != rotated {
+			t.Errorf("write-back %d: key = %q, want %q", i, got, rotated)
+		}
+		if len(store.called()) != before+1 {
+			t.Errorf("write-back %d did not resolve the secret again", i)
+		}
 	}
 
-	// The same reference as a plain string (a JSON dump, or a quoted YAML
-	// scalar) has lost the tag. It is rejected, not stored as the value.
-	for _, doc := range []string{`api_key: "!secret A"`, string(asJSON)} {
-		src.Set(doc)
-		err := mgr.Reload(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "plain string") {
-			t.Errorf("%s: err = %v, want the plain-string reference error", doc, err)
-		}
-		if got := cfg.Get().APIKey.Reveal(); got != "rotated" {
-			t.Errorf("%s: secret = %q after the rejected reload", doc, got)
+	// A dump written back unedited still carries the [REDACTED] marker for
+	// the literal secret and is rejected.
+	src.Set(string(asYAML))
+	if err := mgr.Reload(context.Background()); err == nil || !strings.Contains(err.Error(), "redaction marker") {
+		t.Errorf("err = %v, want the redaction-marker error", err)
+	}
+}
+
+// One reference syntax in every format: the string "!secret NAME".
+func TestSecretResolver_StringReferences(t *testing.T) {
+	t.Parallel()
+	docs := map[string]struct{ ok, onString string }{
+		"yaml": {"api_key: '!secret A'\nproviders:\n  - api_key: \"!secret   B  \"", "display_name: '!secret A'"},
+		"json": {`{"api_key": "!secret A", "providers": [{"api_key": "!secret B"}]}`, `{"display_name": "!secret A"}`},
+		"toml": {"api_key = '!secret A'\n[[providers]]\napi_key = '!secret B'", "display_name = '!secret A'"},
+	}
+	for format, doc := range docs {
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+			store := newSecretStore("A", "va", "B", "vb")
+			mgr, _ := startWithSource(t, doc.ok, lemonfig.WithConfigType(format), lemonfig.WithSecretResolver(store.resolve))
+			cfg := lemonfig.Load[taggedConfig](mgr)
+			mustStart(t, mgr)
+			if c := cfg.Get(); c.APIKey.Reveal() != "va" || c.Providers[0].APIKey.Reveal() != "vb" {
+				t.Errorf("resolved %q and %q", c.APIKey.Reveal(), c.Providers[0].APIKey.Reveal())
+			}
+
+			store = newSecretStore("A", "va")
+			bad, _ := startWithSource(t, doc.onString, lemonfig.WithConfigType(format), lemonfig.WithSecretResolver(store.resolve))
+			lemonfig.Load[taggedConfig](bad)
+			err := bad.Start(context.Background())
+			var refErr lemonfig.SecretRefError
+			if !errors.Is(err, lemonfig.ErrSecretRef) || !errors.As(err, &refErr) || refErr.Path != "display_name" {
+				t.Errorf("reference on a string field: err = %v", err)
+			}
+			if calls := store.called(); len(calls) != 0 {
+				t.Errorf("resolver was called for a rejected document: %v", calls)
+			}
+
+			violations, err := lemonfig.CheckSecretRefs[taggedConfig]([]byte(doc.onString), format)
+			if err != nil || len(violations) != 1 || violations[0].Path != "display_name" {
+				t.Errorf("CheckSecretRefs = %v, %v", violations, err)
+			}
+			if violations, err := lemonfig.CheckSecretRefs[taggedConfig]([]byte(doc.ok), format); err != nil || len(violations) != 0 {
+				t.Errorf("CheckSecretRefs on the valid document = %v, %v", violations, err)
+			}
+		})
+	}
+}
+
+// "!!secret ..." is the literal string "!secret ...": one "!" is removed and
+// nothing is resolved. Strings that only resemble a reference are untouched.
+func TestSecretResolver_Escape(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"!!secret NAME":  "!secret NAME",
+		"!!!secret NAME": "!!secret NAME",
+		"!!secret":       "!secret",
+		"!!other":        "!!other",
+		"!!secretive":    "!!secretive",
+		"!secretive":     "!secretive",
+		"! secret NAME":  "! secret NAME",
+		"x !secret NAME": "x !secret NAME",
+	}
+	for in, want := range tests {
+		for _, format := range []string{"yaml", "json"} {
+			t.Run(format+" "+in, func(t *testing.T) {
+				t.Parallel()
+				doc, err := json.Marshal(map[string]any{"display_name": in, "labels": map[string]string{"k": in}, "extra": []string{in}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				store := newSecretStore("NAME", "resolved")
+				mgr, _ := startWithSource(t, string(doc), lemonfig.WithConfigType(format), lemonfig.WithSecretResolver(store.resolve))
+				cfg := lemonfig.Load[taggedConfig](mgr)
+				mustStart(t, mgr)
+				c := cfg.Get()
+				if c.DisplayName != want || c.Labels["k"] != want || !reflect.DeepEqual(c.Extra, []any{want}) {
+					t.Errorf("got %q, %q, %v; want %q", c.DisplayName, c.Labels["k"], c.Extra, want)
+				}
+				if calls := store.called(); len(calls) != 0 {
+					t.Errorf("resolver was called: %v", calls)
+				}
+			})
 		}
 	}
 }
 
-// With a resolver configured, a document is decoded by lemonfig rather than
-// by Viper's reader. A document without tags must load identically.
-func TestSecretResolver_UntaggedDocumentLoadsIdentically(t *testing.T) {
+func TestSecretResolver_ReferenceWithoutResolver(t *testing.T) {
 	t.Parallel()
-	const doc = `
+	mgr, _ := startWithSource(t, "api_key: !secret A")
+	lemonfig.Load[taggedConfig](mgr)
+	err := mgr.Start(context.Background())
+	if !errors.Is(err, lemonfig.ErrSecretResolveFailed) || !strings.Contains(err.Error(), "no SecretResolver") {
+		t.Errorf("err = %v, want ErrSecretResolveFailed naming the missing resolver", err)
+	}
+}
+
+// A resolved value that is itself a reference fails; it is not followed.
+func TestSecretResolver_ValueIsAReference(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"!secret B", "!secret A", "!secret"} {
+		store := newSecretStore("A", value, "B", "vb")
+		mgr, _ := startWithSource(t, "api_key: !secret A", lemonfig.WithSecretResolver(store.resolve))
+		lemonfig.Load[taggedConfig](mgr)
+		err := mgr.Start(context.Background())
+		if !errors.Is(err, lemonfig.ErrSecretResolveFailed) || !strings.Contains(err.Error(), "itself a secret reference") {
+			t.Errorf("value %q: err = %v", value, err)
+		}
+		if calls := store.called(); len(calls) != 1 {
+			t.Errorf("value %q: resolver calls = %v, want only A", value, calls)
+		}
+	}
+}
+
+// Distinct names are resolved concurrently, at most 8 at a time.
+func TestSecretResolver_ResolvesInParallel(t *testing.T) {
+	t.Parallel()
+	const names = 20
+	var doc strings.Builder
+	doc.WriteString("providers:\n")
+	for i := range names {
+		fmt.Fprintf(&doc, "  - api_key: !secret S%d\n", i)
+	}
+	var mu sync.Mutex
+	running, peak := 0, 0
+	eight := make(chan struct{}) // closed once 8 calls are in flight together
+	resolve := func(ctx context.Context, name string) (string, error) {
+		mu.Lock()
+		running++
+		peak = max(peak, running)
+		if running == 8 && peak == 8 {
+			select {
+			case <-eight:
+			default:
+				close(eight)
+			}
+		}
+		mu.Unlock()
+		select {
+		case <-eight:
+		case <-time.After(3 * time.Second):
+			return "", errors.New("calls did not run concurrently")
+		}
+		time.Sleep(time.Millisecond)
+		mu.Lock()
+		running--
+		mu.Unlock()
+		return "v-" + name, nil
+	}
+	mgr, _ := startWithSource(t, doc.String(), lemonfig.WithSecretResolver(resolve))
+	cfg := lemonfig.Load[taggedConfig](mgr)
+	mustStart(t, mgr)
+
+	for i, p := range cfg.Get().Providers {
+		if want := fmt.Sprintf("v-S%d", i); p.APIKey.Reveal() != want {
+			t.Errorf("providers[%d] = %q, want %q", i, p.APIKey.Reveal(), want)
+		}
+	}
+	if peak != 8 {
+		t.Errorf("peak concurrency = %d, want 8", peak)
+	}
+}
+
+// One failing name fails the reload with that name's error and cancels the
+// calls still running.
+func TestSecretResolver_FailureCancelsOthers(t *testing.T) {
+	t.Parallel()
+	resolve := func(ctx context.Context, name string) (string, error) {
+		if name == "BAD" {
+			return "", errors.New("denied")
+		}
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	mgr, _ := startWithSource(t, "api_key: !secret GOOD\ntoken: !secret BAD\nptr: {api_key: !secret OTHER}",
+		lemonfig.WithSecretResolver(resolve))
+	lemonfig.Load[taggedConfig](mgr)
+	err := mgr.Start(context.Background())
+	if !errors.Is(err, lemonfig.ErrSecretResolveFailed) || !strings.Contains(err.Error(), "BAD") || !strings.Contains(err.Error(), "denied") {
+		t.Errorf("err = %v, want BAD's failure", err)
+	}
+}
+
+// The Manager decodes the document itself. A document without references
+// must give Viper the same settings its own reader would.
+func TestManager_DecodesLikeViper(t *testing.T) {
+	t.Parallel()
+	docs := map[string]string{
+		"yaml": `
 Name: MixedCase
 port: 8080
 ratio: 1.5
@@ -446,21 +623,37 @@ nested: {a: {b: [1, 2]}, Upper: x}
 base: &base {x: 1}
 derived: {<<: *base, y: 2}
 1: numeric-key
-`
-	settings := func(opts ...lemonfig.Option) map[string]any {
-		var got map[string]any
-		opts = append(opts, lemonfig.WithValidation(func(v *viper.Viper) error {
-			got = v.AllSettings()
-			return nil
-		}))
-		mgr, _ := startWithSource(t, doc, opts...)
-		mustStart(t, mgr)
-		return got
+`,
+		"json": `{"Name": "MixedCase", "port": 8080, "ratio": 1.5, "debug": true, "nothing": null,
+			"list": ["a", 2, {"k": "v"}], "nested": {"a": {"b": [1, 2]}, "Upper": "x"}}`,
+		"toml": "Name = 'MixedCase'\nport = 8080\nratio = 1.5\ndebug = true\nwhen = 2026-01-02T00:00:00Z\n" +
+			"list = ['a', 'b']\n[nested]\nUpper = 'x'\n[nested.a]\nb = [1, 2]\n[[items]]\nk = 'v'\n",
 	}
-	plain := settings()
-	withResolver := settings(lemonfig.WithSecretResolver(newSecretStore().resolve))
-	if len(plain) == 0 || !reflect.DeepEqual(plain, withResolver) {
-		t.Errorf("settings differ\nviper:    %#v\nresolver: %#v", plain, withResolver)
+	for format, doc := range docs {
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+			direct := viper.New()
+			direct.SetConfigType(format)
+			if err := direct.ReadConfig(strings.NewReader(doc)); err != nil {
+				t.Fatal(err)
+			}
+			want := direct.AllSettings()
+
+			var got map[string]any
+			mgr, _ := startWithSource(t, doc, lemonfig.WithConfigType(format), lemonfig.WithValidation(func(v *viper.Viper) error {
+				got = v.AllSettings()
+				for _, key := range direct.AllKeys() {
+					if !reflect.DeepEqual(v.Get(key), direct.Get(key)) {
+						t.Errorf("Get(%q) = %#v, want %#v", key, v.Get(key), direct.Get(key))
+					}
+				}
+				return nil
+			}))
+			mustStart(t, mgr)
+			if len(want) == 0 || !reflect.DeepEqual(got, want) {
+				t.Errorf("settings differ\nviper:    %#v\nlemonfig: %#v", want, got)
+			}
+		})
 	}
 }
 
@@ -475,26 +668,26 @@ func TestSecretResolver_NonYAMLUntouched(t *testing.T) {
 	}
 }
 
-func TestCheckSecretTags(t *testing.T) {
+func TestCheckSecretRefs(t *testing.T) {
 	t.Parallel()
 	t.Run("valid document", func(t *testing.T) {
 		t.Parallel()
-		bad, err := lemonfig.CheckSecretTags[taggedConfig]([]byte(
-			"api_key: !secret A\nproviders:\n  - api_key: !secret B\n  - api_key: literal\ntoken: !secret C\ndisplay_name: x"))
+		bad, err := lemonfig.CheckSecretRefs[taggedConfig]([]byte(
+			"api_key: !secret A\nproviders:\n  - api_key: !secret B\n  - api_key: literal\ntoken: !secret C\ndisplay_name: x"), "yaml")
 		if err != nil || len(bad) != 0 {
 			t.Errorf("bad = %v, err = %v", bad, err)
 		}
 	})
 	t.Run("reports every violation", func(t *testing.T) {
 		t.Parallel()
-		bad, err := lemonfig.CheckSecretTags[taggedConfig]([]byte(`
+		bad, err := lemonfig.CheckSecretRefs[taggedConfig]([]byte(`
 api_key: !secret OK
 display_name: !secret A
 url: !secret B
 providers:
   - {name: !secret C, api_key: !secret OK}
 extra: !secret D
-`))
+`), "yaml")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -513,14 +706,14 @@ extra: !secret D
 	t.Run("invalid document", func(t *testing.T) {
 		t.Parallel()
 		for _, doc := range []string{"a: [", "ptr: !secret {a: b}", "api_key: !secret ''"} {
-			if _, err := lemonfig.CheckSecretTags[taggedConfig]([]byte(doc)); !errors.Is(err, lemonfig.ErrParseFailed) {
+			if _, err := lemonfig.CheckSecretRefs[taggedConfig]([]byte(doc), "yaml"); !errors.Is(err, lemonfig.ErrParseFailed) {
 				t.Errorf("%q: err = %v, want ErrParseFailed", doc, err)
 			}
 		}
 	})
 	t.Run("empty document", func(t *testing.T) {
 		t.Parallel()
-		if bad, err := lemonfig.CheckSecretTags[taggedConfig](nil); err != nil || len(bad) != 0 {
+		if bad, err := lemonfig.CheckSecretRefs[taggedConfig](nil, "yaml"); err != nil || len(bad) != 0 {
 			t.Errorf("bad = %v, err = %v", bad, err)
 		}
 	})

@@ -10,15 +10,15 @@ type ConfigSource interface {
 
 // ChangeKeyer is implemented by a [WatchableSource] that detects change by
 // comparing fetched content. SetChangeKey replaces the compared value with
-// key(content), so that state the content only refers to counts as a change.
-// A [Manager] with [WithSecretResolver] installs a key that covers the
-// document's resolved secrets, which is how a rotated secret triggers a reload.
+// key(content, format), so that state the content only refers to counts as a
+// change. A [Manager] installs a key that covers the document's resolved
+// secrets, which is how a rotated secret triggers a reload.
 //
 // SetChangeKey is called before Watch. When key returns an error the source
 // must treat the observation as failed and repeat it, as it does for a failed
 // fetch.
 type ChangeKeyer interface {
-	SetChangeKey(key func(ctx context.Context, data []byte) ([]byte, error))
+	SetChangeKey(key func(ctx context.Context, data []byte, format string) ([]byte, error))
 }
 
 // WatchableSource is a [ConfigSource] that can push change notifications.

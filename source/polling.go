@@ -13,7 +13,7 @@ import (
 type PollingSource struct {
 	inner    lemonfig.ConfigSource
 	interval time.Duration
-	key      func(ctx context.Context, data []byte) ([]byte, error)
+	key      func(ctx context.Context, data []byte, format string) ([]byte, error)
 	lastKey  []byte
 }
 
@@ -30,19 +30,19 @@ func (s *PollingSource) Fetch(ctx context.Context) ([]byte, string, error) {
 	return s.inner.Fetch(ctx)
 }
 
-// SetChangeKey implements [lemonfig.ChangeKeyer]: Watch compares key(content)
-// instead of the content itself.
-func (s *PollingSource) SetChangeKey(key func(ctx context.Context, data []byte) ([]byte, error)) {
+// SetChangeKey implements [lemonfig.ChangeKeyer]: Watch compares
+// key(content, format) instead of the content itself.
+func (s *PollingSource) SetChangeKey(key func(ctx context.Context, data []byte, format string) ([]byte, error)) {
 	s.key = key
 }
 
 // fetchKey fetches the inner source and returns the value Watch compares.
 func (s *PollingSource) fetchKey(ctx context.Context) ([]byte, error) {
-	data, _, err := s.inner.Fetch(ctx)
+	data, format, err := s.inner.Fetch(ctx)
 	if err != nil || s.key == nil {
 		return data, err
 	}
-	return s.key(ctx, data)
+	return s.key(ctx, data, format)
 }
 
 // Watch polls the inner source at the configured interval.

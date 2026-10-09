@@ -29,10 +29,11 @@ var (
 	// ErrTransformFailed is returned when a Map/Combine transform returns an error during reload.
 	ErrTransformFailed = errors.New("lemonfig: transform failed during reload")
 
-	// ErrSecretTag is returned when a !secret tag in the document does not
+	// ErrSecretRef is returned when a secret reference in the document does not
 	// land on a [Secret]-typed field. No secret is resolved for such a document.
-	ErrSecretTag = errors.New("lemonfig: !secret tag on a non-secret path")
+	ErrSecretRef = errors.New("lemonfig: secret reference on a non-secret path")
 
-	// ErrSecretResolveFailed is returned when the [SecretResolver] fails.
+	// ErrSecretResolveFailed is returned when the [SecretResolver] fails, or
+	// when the document has a secret reference and no resolver is configured.
 	ErrSecretResolveFailed = errors.New("lemonfig: secret resolution failed")
 )

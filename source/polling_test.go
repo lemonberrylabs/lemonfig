@@ -121,7 +121,7 @@ func TestPollingSource_ChangeKey(t *testing.T) {
 	extra.Store("a")
 	var failing atomic.Bool
 	var keyErrs atomic.Int32
-	ps.SetChangeKey(func(_ context.Context, data []byte) ([]byte, error) {
+	ps.SetChangeKey(func(_ context.Context, data []byte, _ string) ([]byte, error) {
 		if failing.Load() {
 			keyErrs.Add(1)
 			return nil, errors.New("key unavailable")

@@ -1,7 +1,6 @@
 package lemonfig
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -96,7 +95,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	// If the source supports watching, start a background goroutine.
 	if ws, ok := m.source.(WatchableSource); ok {
-		if ck, ok := ws.(ChangeKeyer); ok && m.cfg.secretResolver != nil {
+		if ck, ok := ws.(ChangeKeyer); ok {
 			ck.SetChangeKey(m.secretChangeKey)
 		}
 		watchCtx, cancel := context.WithCancel(ctx)
@@ -158,24 +157,15 @@ func (m *Manager) reloadLocked(ctx context.Context) error {
 		return fmt.Errorf("%w: %w", ErrFetchFailed, err)
 	}
 
-	// Determine config type.
-	cfgType := m.cfg.configType
-	if cfgType == "" {
-		cfgType = format
-	}
+	cfgType := m.configType(format)
 
 	v := viper.New()
 	v.SetConfigType(cfgType)
 	for _, fn := range m.cfg.viperConfigure {
 		fn(v)
 	}
-	if m.cfg.secretResolver != nil && isYAML(cfgType) {
-		if err := m.readSecretYAML(ctx, v, data); err != nil {
-			return err
-		}
-	} else if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
-		m.cfg.logger.Error("parse failed", "error", err)
-		return fmt.Errorf("%w: %w", ErrParseFailed, err)
+	if err := m.readConfig(ctx, v, data, cfgType); err != nil {
+		return err
 	}
 
 	// Validate if configured.
