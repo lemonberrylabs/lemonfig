@@ -269,6 +269,8 @@ graph TD
 
 **DAG frozen at Start:** All `Load`/`Map`/`Combine` registrations must happen before `mgr.Start()`. This keeps the implementation simple and race-free.
 
+**No reads before Start:** `Get()` panics until `mgr.Start()` has loaded the first config, including after a `Start` that returned an error. The panic value wraps `ErrNotStarted`. Pass the `*Val[T]` to constructors and call `Get()` where the value is used; a value read at construction would also miss every later reload.
+
 ## Logging
 
 Pass a logger via `WithLogger`. The library defines a minimal interface:
@@ -320,6 +322,7 @@ mgr, _ := lemonfig.NewManager(src, lemonfig.WithLogger(ZapAdapter{zapLogger.Suga
 | Secret reference on a non-`Secret` path | Old generation preserved, nothing resolved, error logged |
 | Secret resolver error | Old generation preserved, error logged |
 | Transform error | Entire reload aborted, old generation preserved |
+| `Get()` before the first successful load | Panics with an error wrapping `ErrNotStarted` |
 
 `Manager.Reload()` returns the error for programmatic handling.
 

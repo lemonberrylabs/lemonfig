@@ -1,6 +1,7 @@
 package lemonfig
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 
@@ -42,21 +43,31 @@ type Val[T any] struct {
 // It performs a single atomic pointer load followed by a map lookup — lock-free
 // and safe to call from any goroutine.
 //
-// Before [Manager.Start] has built the first generation, Get returns the zero
-// value of T. Callers that may run before Start should treat the zero value
-// as "not yet loaded".
+// Get panics if called before [Manager.Start] has loaded the first config,
+// including after a Start that failed. The panic value wraps [ErrNotStarted].
+// Hold the Val and call Get where the value is used; a value read in a
+// constructor would also miss every later reload.
 func (d *Val[T]) Get() T {
 	gen := d.mgr.current.Load()
 	if gen == nil {
-		var zero T
-		return zero
+		panicGetBeforeStart()
 	}
 	v, ok := gen.values[d.id]
 	if !ok {
-		var zero T
-		return zero
+		panicGetUnregistered(d.id)
 	}
 	return v.(T)
+}
+
+func panicGetBeforeStart() {
+	panic(fmt.Errorf("%w: Val.Get called before Manager.Start loaded the config; read the value where it is used, not at construction", ErrNotStarted))
+}
+
+// panicGetUnregistered reports a node absent from a built generation. Every
+// registered node gets a value on each successful reload, so this is a bug in
+// lemonfig, not in the caller.
+func panicGetUnregistered(id derivedID) {
+	panic(fmt.Sprintf("lemonfig: internal error: Val.Get: node %d has no value in the current generation", id))
 }
 
 // Load creates a [Val] that unmarshals the entire config into a struct

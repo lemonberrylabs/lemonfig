@@ -11,7 +11,9 @@ var (
 	// ErrAlreadyStarted is returned when Start is called more than once.
 	ErrAlreadyStarted = errors.New("lemonfig: manager already started")
 
-	// ErrNotStarted is returned when Stop is called before Start.
+	// ErrNotStarted is returned when Stop is called before Start. It is also
+	// wrapped by the panic value of [Val.Get] called before Start has loaded
+	// the first config.
 	ErrNotStarted = errors.New("lemonfig: manager not started")
 
 	// ErrFrozen is the panic message when registering derived values after Start.
