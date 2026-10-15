@@ -2,6 +2,7 @@ package lemonfig_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -311,16 +312,31 @@ func TestStruct_MissingPath(t *testing.T) {
 	}
 }
 
-func TestGetBeforeStartReturnsZero(t *testing.T) {
+// mustPanicNotStarted calls get and fails the test unless it panics with an
+// error wrapping ErrNotStarted.
+func mustPanicNotStarted(t *testing.T, get func()) {
+	t.Helper()
+	defer func() {
+		t.Helper()
+		r := recover()
+		err, ok := r.(error)
+		if !ok || !errors.Is(err, lemonfig.ErrNotStarted) {
+			t.Fatalf("Get panic = %v, want an error wrapping ErrNotStarted", r)
+		}
+	}()
+	get()
+}
+
+func TestGetBeforeStartPanics(t *testing.T) {
 	mgr, err := lemonfig.NewManager(newStaticSource("v: 1\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	v := lemonfig.Key[int](mgr, "v")
-	// No Start yet — Get must return the zero value, not panic.
-	if got := v.Get(); got != 0 {
-		t.Errorf("Get before Start = %d, want zero", got)
-	}
+	doubled := lemonfig.Map(v, func(n int) (int, error) { return n * 2, nil })
+	mustPanicNotStarted(t, func() { v.Get() })
+	mustPanicNotStarted(t, func() { doubled.Get() })
+
 	if err := mgr.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -328,4 +344,21 @@ func TestGetBeforeStartReturnsZero(t *testing.T) {
 	if got := v.Get(); got != 1 {
 		t.Errorf("Get after Start = %d, want 1", got)
 	}
+	if got := doubled.Get(); got != 2 {
+		t.Errorf("derived Get after Start = %d, want 2", got)
+	}
+}
+
+func TestGetAfterFailedStartPanics(t *testing.T) {
+	src := &failingSource{data: []byte("v: 1\n")}
+	src.fail.Store(true)
+	mgr, err := lemonfig.NewManager(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := lemonfig.Key[int](mgr, "v")
+	if err := mgr.Start(context.Background()); err == nil {
+		t.Fatal("Start with a failing source succeeded")
+	}
+	mustPanicNotStarted(t, func() { v.Get() })
 }

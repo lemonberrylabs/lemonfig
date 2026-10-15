@@ -178,29 +178,6 @@ func TestStart_EmptyConfig(t *testing.T) {
 
 // --- Get() edge cases ---
 
-func TestGet_BeforeStart(t *testing.T) {
-	src := newStaticSource("name: alice")
-	mgr, err := lemonfig.NewManager(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := lemonfig.Key[string](mgr, "name")
-
-	// Get() before Start — generation is nil, should return zero value.
-	// This may panic if there's no nil check. Let's recover.
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Logf("Get() before Start panicked: %v (documenting behavior)", r)
-			}
-		}()
-		got := name.Get()
-		if got != "" {
-			t.Errorf("Get before Start = %q, want empty", got)
-		}
-	}()
-}
-
 // --- Freeze edge cases ---
 
 func TestFreeze_LoadAfterStart(t *testing.T) {
