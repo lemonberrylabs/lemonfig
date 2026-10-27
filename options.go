@@ -69,7 +69,8 @@ func WithViperConfigure(fn func(*viper.Viper)) Option {
 // must implement [ChangeKeyer], as source.PollingSource does: each poll then
 // resolves the document's secrets and a changed value triggers a reload.
 // [WithSecretRefreshInterval] makes polls resolve less often.
-// With other sources, call [Manager.Reload].
+// With other sources, call [Manager.Reload] (with that option, within its
+// interval, change the document instead).
 func WithSecretResolver(r SecretResolver) Option {
 	return func(c *managerConfig) { c.secretResolver = r }
 }
