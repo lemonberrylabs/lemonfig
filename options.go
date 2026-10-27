@@ -17,6 +17,7 @@ type managerConfig struct {
 	onReload       []func(old, new_ *viper.Viper)
 	viperConfigure []func(*viper.Viper)
 	secretResolver SecretResolver
+	secretRefresh  time.Duration
 }
 
 func defaultConfig() managerConfig {
@@ -67,9 +68,27 @@ func WithViperConfigure(fn func(*viper.Viper)) Option {
 // To pick up a rotated secret while the document is unchanged, the source
 // must implement [ChangeKeyer], as source.PollingSource does: each poll then
 // resolves the document's secrets and a changed value triggers a reload.
-// With other sources, call [Manager.Reload].
+// [WithSecretRefreshInterval] makes polls resolve less often.
+// With other sources, call [Manager.Reload] (with that option, within its
+// interval, change the document instead).
 func WithSecretResolver(r SecretResolver) Option {
 	return func(c *managerConfig) { c.secretResolver = r }
+}
+
+// WithSecretRefreshInterval makes the Manager resolve the secrets of an
+// unchanged document at most once per d. Within d of the last resolution, a
+// poll of a [ChangeKeyer] source and a reload of the same document bytes,
+// including [Manager.Reload], reuse the values resolved then, so a rotated
+// secret is picked up up to d late.
+//
+// A document whose bytes changed is resolved at once: the poll that sees the
+// change resolves its secrets, and the reload it triggers reuses them. To
+// force every instance to fetch fresh secrets, change the document.
+//
+// A failed resolution is retried on the next poll, as without this option.
+// With d <= 0, the default, every poll and every reload resolves.
+func WithSecretRefreshInterval(d time.Duration) Option {
+	return func(c *managerConfig) { c.secretRefresh = d }
 }
 
 // WithValidation registers a function that validates a parsed config.

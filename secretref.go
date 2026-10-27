@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -523,7 +524,7 @@ func (m *Manager) readConfig(ctx context.Context, v *viper.Viper, data []byte, c
 		m.cfg.logger.Error("secret reference rejected", "error", err)
 		return err
 	}
-	values, err := m.resolveSecrets(ctx, d)
+	values, err := m.resolveSecretsCached(ctx, data, d)
 	if err != nil {
 		m.cfg.logger.Error("secret resolution failed", "error", err)
 		return err
@@ -554,7 +555,7 @@ func (m *Manager) secretChangeKey(ctx context.Context, data []byte, format strin
 	if err != nil || len(d.violations(m.secretTargets())) > 0 {
 		return h.Sum(nil), nil
 	}
-	values, err := m.resolveSecrets(ctx, d)
+	values, err := m.resolveSecretsCached(ctx, data, d)
 	if err != nil {
 		m.cfg.logger.Error("secret resolution failed", "error", err)
 		return nil, err
@@ -564,6 +565,43 @@ func (m *Manager) secretChangeKey(ctx context.Context, data []byte, format strin
 		field(values[name].Reveal())
 	}
 	return h.Sum(nil), nil
+}
+
+// secretCache holds the secrets last resolved for a document, for
+// [WithSecretRefreshInterval]. It has its own lock because the change key runs
+// on the watch goroutine, outside the reload lock.
+type secretCache struct {
+	mu     sync.Mutex
+	data   []byte
+	values map[string]Secret
+	at     time.Time
+}
+
+// resolveSecretsCached is resolveSecrets for the document data, reusing the
+// values resolved for the same bytes less than the refresh interval ago. A
+// failed resolution leaves the cache as it was, so an expired entry stays
+// expired and the next call tries again.
+func (m *Manager) resolveSecretsCached(ctx context.Context, data []byte, d *secretDoc) (map[string]Secret, error) {
+	every := m.cfg.secretRefresh
+	if every <= 0 {
+		return m.resolveSecrets(ctx, d)
+	}
+	c := &m.secrets
+	c.mu.Lock()
+	if bytes.Equal(data, c.data) && time.Since(c.at) < every {
+		values := c.values
+		c.mu.Unlock()
+		return values, nil
+	}
+	c.mu.Unlock()
+	values, err := m.resolveSecrets(ctx, d)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	c.data, c.values, c.at = bytes.Clone(data), values, time.Now()
+	c.mu.Unlock()
+	return values, nil
 }
 
 // configType is the config type for a document the source reported as format.
