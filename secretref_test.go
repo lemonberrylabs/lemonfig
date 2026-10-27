@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -905,4 +906,131 @@ func TestSecretResolver_OneShotManagerEqualsLive(t *testing.T) {
 	if rotated := load(); rotated.APIKey == boot.APIKey {
 		t.Error("a rotated secret compares equal to the old one")
 	}
+}
+
+// secretPollFixture starts a Manager over a PollingSource with the given
+// secret refresh interval and counts its reloads.
+type secretPollFixture struct {
+	src   *staticSource
+	store *secretStore
+	log   *recLogger
+	mgr   *lemonfig.Manager
+	cfg   *lemonfig.Val[taggedConfig]
+
+	mu      sync.Mutex
+	reloads int
+}
+
+func newSecretPollFixture(t *testing.T, doc string, refresh time.Duration, store *secretStore) *secretPollFixture {
+	t.Helper()
+	f := &secretPollFixture{src: newStaticSource(doc), store: store, log: &recLogger{}}
+	mgr, err := lemonfig.NewManager(source.NewPollingSource(f.src, 5*time.Millisecond),
+		lemonfig.WithSecretResolver(store.resolve),
+		lemonfig.WithSecretRefreshInterval(refresh),
+		lemonfig.WithLogger(f.log),
+		lemonfig.WithOnReload(func(_, _ *viper.Viper) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.reloads++
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mgr = mgr
+	f.cfg = lemonfig.Load[taggedConfig](mgr)
+	mustStart(t, mgr)
+	eventually(t, "setup apply", func() bool { return f.reloadCount() == 1 })
+	return f
+}
+
+func (f *secretPollFixture) reloadCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reloads
+}
+
+func (f *secretPollFixture) key() string { return f.cfg.Get().APIKey.Reveal() }
+
+// Within the refresh interval an unchanged document is never resolved again:
+// not by the polls, not by the watch's setup apply, not by Manager.Reload.
+func TestSecretRefreshInterval_UnchangedDocumentResolvesOnce(t *testing.T) {
+	t.Parallel()
+	store := newSecretStore("A", "v1")
+	f := newSecretPollFixture(t, "api_key: !secret A", time.Hour, store)
+
+	store.set("A", "v2")
+	time.Sleep(100 * time.Millisecond) // about 20 polls
+	if err := f.mgr.Reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.called(); !slices.Equal(got, []string{"A"}) {
+		t.Errorf("resolver calls = %v, want [A]", got)
+	}
+	if f.key() != "v1" {
+		t.Errorf("key = %q, want v1 until the interval passes", f.key())
+	}
+	if n := f.reloadCount(); n != 2 { // setup apply + the manual Reload
+		t.Errorf("%d reloads, want 2", n)
+	}
+}
+
+// After the interval a poll resolves again; a rotation is picked up with one
+// reload, and the polls in between resolve nothing.
+func TestSecretRefreshInterval_RotationAfterInterval(t *testing.T) {
+	t.Parallel()
+	const refresh = 50 * time.Millisecond
+	store := newSecretStore("A", "v1")
+	f := newSecretPollFixture(t, "api_key: !secret A", refresh, store)
+
+	start := time.Now()
+	store.set("A", "v2")
+	eventually(t, "rotation to v2", func() bool { return f.key() == "v2" })
+	time.Sleep(3 * refresh)
+	elapsed := time.Since(start)
+
+	if n := f.reloadCount(); n != 2 {
+		t.Errorf("%d reloads after one rotation, want 2", n)
+	}
+	// One resolution at Start, then at most one per interval. Polls run every
+	// 5ms, so resolving on every poll would be about ten times as many.
+	if got, limit := len(store.called()), 2+int(elapsed/refresh); got > limit {
+		t.Errorf("%d resolver calls in %v, want at most %d", got, elapsed, limit)
+	}
+}
+
+// A changed document is resolved by the poll that sees it, whatever the
+// interval; the reload reuses those values, and the next polls key the same,
+// so there is exactly one reload and one resolution of the new document.
+func TestSecretRefreshInterval_ChangedDocumentResolvesAtOnce(t *testing.T) {
+	t.Parallel()
+	store := newSecretStore("A", "a1", "B", "b1")
+	f := newSecretPollFixture(t, "api_key: !secret A", time.Hour, store)
+
+	f.src.Set("api_key: !secret B")
+	eventually(t, "switch to B", func() bool { return f.key() == "b1" })
+	time.Sleep(50 * time.Millisecond)
+
+	if got := store.called(); !slices.Equal(got, []string{"A", "B"}) {
+		t.Errorf("resolver calls = %v, want [A B]", got)
+	}
+	if n := f.reloadCount(); n != 2 {
+		t.Errorf("%d reloads after one document change, want 2", n)
+	}
+}
+
+// A failed refresh keeps the generation and is retried on the next poll.
+func TestSecretRefreshInterval_FailedRefreshRetries(t *testing.T) {
+	t.Parallel()
+	store := newSecretStore("A", "v1")
+	f := newSecretPollFixture(t, "api_key: !secret A", 20*time.Millisecond, store)
+
+	store.fail(errors.New("backend down"))
+	store.set("A", "v2")
+	eventually(t, "resolver error logged", func() bool { return f.log.contains("backend down") })
+	if f.key() != "v1" {
+		t.Errorf("key = %q during the outage, want v1", f.key())
+	}
+	store.fail(nil)
+	eventually(t, "rotation to v2", func() bool { return f.key() == "v2" })
 }

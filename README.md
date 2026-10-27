@@ -213,6 +213,7 @@ Reloading:
 
 - Changing `!secret OLD` to `!secret NEW` in the document reloads like any other edit and rebuilds the dependents of that field.
 - With `source.PollingSource`, each poll resolves the document's secrets, so a rotated secret triggers a reload when the document has not changed. Other sources pick up a rotation on the next reload.
+- `WithSecretRefreshInterval(d)` limits that to one resolution per `d` while the document bytes are unchanged; polls and reloads in between reuse the last values. A changed document is resolved at once, so editing it forces fresh secrets.
 
 Loading without a running manager:
 

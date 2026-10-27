@@ -23,7 +23,7 @@ type Manager struct {
 	allNodes []derivedNode // topologically sorted, roots first
 
 	// Config
-	cfg    managerConfig
+	cfg     managerConfig
 	nextID_ derivedID
 	frozen  bool
 
@@ -34,6 +34,8 @@ type Manager struct {
 
 	eagerRecompute bool // set by TestVal; recompute derived nodes on every addNode
 	unresolved     bool // set by DecodeUnresolved; leave secret references unfetched
+
+	secrets secretCache // used when WithSecretRefreshInterval is set
 }
 
 // NewManager creates a [Manager] with the given source and options.
